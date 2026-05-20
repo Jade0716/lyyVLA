@@ -7,9 +7,9 @@ is_debug: false
 version_id: "0.21"
 
 framework:
-  name: QwenGR00T
+  name: QwenPI_v3
   qwenvl:
-    base_vlm: ./playground/Pretrained_models/Qwen2.5-VL-3B-Instruct
+    base_vlm: /15T/liuyuyan/Qwen/Qwen3.5-0.8B
     attn_implementation: flash_attention_2
     vl_hidden_dim: 2048
   dino:
@@ -32,6 +32,7 @@ framework:
     num_inference_timesteps: 4
     num_target_vision_tokens: 32
     diffusion_model_cfg:    # Parameters for the DiT transformer
+      action_dit_hidden_dim: 1024
       dropout: 0.2
       final_dropout: true
       interleave_self_attention: true
@@ -40,27 +41,27 @@ framework:
       positional_embeddings: null
 
 datasets:
-  vlm_data:
-    dataset_py: vlm_datasets
-    dataformat: llava_json
-    dataset_use: sharegpt4v_coco
-    eval_dataset: sharegpt4v_coco
-    data_flatten: false
-    base_interval: 2
-    max_pixels: 307200
-    min_pixels: 784
-    model_max_length: 2048
-    model_type: qwen2.5vl
-    per_device_batch_size: 4
+  # vlm_data:
+  #   dataset_py: vlm_datasets
+  #   dataformat: llava_json
+  #   dataset_use: sharegpt4v_coco
+  #   eval_dataset: sharegpt4v_coco
+  #   data_flatten: false
+  #   base_interval: 2
+  #   max_pixels: 307200
+  #   min_pixels: 784
+  #   model_max_length: 2048
+  #   model_type: qwen2.5vl
+  #   per_device_batch_size: 4
 
   vla_data:
     dataset_py: lerobot_datasets
     include_state: false
-    data_root_dir: playground/Datasets/OXE_LEROBOT_DATASET
+    data_root_dir: /media/hhhar/hhd/liuyuyan/
     data_mix: bridge_rt_1 # bridge_rt_1
     action_type: delta_ee
     CoT_prompt: "Your task is {instruction}. To identify the key objects for your task. Locate their bounding boxes in [x1,y1,x2,y2] format."
-    per_device_batch_size: 16
+    per_device_batch_size: 4
     load_all_data_for_training: true
     obs_image_size: [224, 224]
     video_backend: torchvision_av

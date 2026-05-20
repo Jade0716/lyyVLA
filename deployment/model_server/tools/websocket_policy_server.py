@@ -136,6 +136,36 @@ class WebsocketPolicyServer:
                 "request_id": req_id,
                 "data": data,
             }
+        # infer_with_attention --> framework.predict_action_with_attention
+        elif mtype == "infer_with_attention":
+            if not isinstance(msg, dict):
+                return {
+                    "status": "error",
+                    "ok": False,
+                    "type": "inference_result",
+                    "request_id": req_id,
+                    "error": {"message": "Payload must be a dict", "payload_type": str(type(msg))}
+                }
+            try:
+                output_dict = self._policy.predict_action_with_attention(**msg)
+            except Exception as e:
+                logging.exception("Policy inference with attention error (request_id=%s)", req_id)
+                return {
+                    "status": "error",
+                    "ok": False,
+                    "type": "inference_result",
+                    "request_id": req_id,
+                    "error": {"message": str(e)},
+                }
+            data = output_dict
+            return {
+                "status": "ok",
+                "ok": True,
+                "type": "inference_result",
+                "request_id": req_id,
+                "data": data,
+            }
+
 
         # unknow request type
         else:

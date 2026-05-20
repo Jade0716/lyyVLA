@@ -73,3 +73,34 @@ class WebsocketClientPolicy:
         if isinstance(response, str):
             raise RuntimeError(f"Error in inference server:\n{response}")
         return msgpack_numpy.unpackb(response)
+    @override
+    def predict_action_with_attention(self, query_info: Dict) -> Dict:
+        """Send inference request with attention heatmap generation.
+
+        Args:
+            query_info: dict containing examples and optional heatmap params:
+                - examples: List[dict] with 'image', 'lang', optional 'state'
+                - save_dir: str, directory to save heatmaps
+                - layer_idx: int, which layer's attention to use (-1 = last layer)
+                - image_idx: int, which image to visualize
+
+        Returns:
+            dict with 'data' containing:
+                - normalized_actions: np.ndarray
+                - heatmap_path: str or None (path where heatmap was saved)
+        """
+        # Add message type for attention inference
+        if isinstance(query_info, dict):
+            query_info["type"] = "infer_with_attention"
+        else:
+            query_info = {"type": "infer_with_attention", **query_info}
+
+        data = self._packer.pack(query_info)
+        self._ws.send(data)
+        response = self._ws.recv()
+        if isinstance(response, str):
+            raise RuntimeError(f"Error in inference server:\n{response}")
+        result = msgpack_numpy.unpackb(response)
+        if result.get("status") == "error":
+            raise RuntimeError(f"Server error: {result.get('error', {})}")
+        return result.get("data", result)

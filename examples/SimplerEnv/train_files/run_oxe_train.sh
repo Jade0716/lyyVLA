@@ -1,23 +1,19 @@
 
 
-export NCCL_SOCKET_IFNAME=bond0
-export NCCL_IB_HCA=mlx5_2,mlx5_3
+# export NCCL_SOCKET_IFNAME=bond0
+# export NCCL_IB_HCA=mlx5_2,mlx5_3
 
-# used for check save when communication
-export NCCL_BLOCKING_WAIT=1
-export NCCL_ASYNC_ERROR_HANDLING=1
+# # used for check save when communication
+# export NCCL_BLOCKING_WAIT=1
+# export NCCL_ASYNC_ERROR_HANDLING=1
 export NCCL_TIMEOUT=1000  # timeout set to 1 hour (unit: seconds)
 
 ###########################################################################################
 # === Please modify the following paths according to your environment ===
-Framework_name=QwenGR00T
 freeze_module_list=''
-base_vlm=playground/Pretrained_models/Qwen3-VL-4B-Instruct-Action
 config_yaml=./examples/SimplerEnv/train_files/starvla_cotrain_oxe.yaml
-oxe_data_root=playground/Datasets/OXE_LEROBOT
 data_mix=bridge_rt_1
-run_root_dir=./results/Checkpoints
-run_id=1221_${data_mix}_${Framework_name}
+
 # === End of environment variable configuration ===
 ###########################################################################################
 
@@ -30,17 +26,12 @@ mkdir -p ${output_dir}
 cp $0 ${output_dir}/
 
 
-
+export CUDA_VISIBLE_DEVICES=1,2,3
 accelerate launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
-  --num_processes 8 \
+  --num_processes 3 \
   starVLA/training/train_starvla.py \
   --config_yaml ${config_yaml} \
-  --framework.name ${Framework_name} \
-  --framework.qwenvl.base_vlm ${base_vlm} \
-  --datasets.vla_data.data_root_dir ${oxe_data_root} \
-  --datasets.vla_data.data_mix ${data_mix} \
-  --datasets.vla_data.per_device_batch_size 16 \
   --trainer.freeze_modules ${freeze_module_list} \
   --trainer.max_train_steps 100000 \
   --trainer.save_interval 10000 \
@@ -49,7 +40,7 @@ accelerate launch \
   --run_root_dir ${run_root_dir} \
   --run_id ${run_id} \
   --wandb_project starVLA_simplerEnv \
-  --wandb_entity jinhuiye \
+  --wandb_entity jade0716-hefei-university-of-technology \
   # --is_debug True
 
 

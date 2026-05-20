@@ -7,33 +7,57 @@ is_debug: false
 version_id: "0.21"
 
 framework:
-  name: QwenGR00T
+  name: QwenPI
   qwenvl:
-    base_vlm: ./playground/Pretrained_models/Qwen3-VL-4B-Instruct
+    base_vlm: /16T/liuyuyan/Qwen/Qwen3.5-0.8B
     attn_implementation: flash_attention_2
     vl_hidden_dim: 2048
   action_model:
+    action_model_type: DiT-B
+    action_hidden_dim: 1024     # TODO merge with hidden_size, in config v2
+    num_vl_layers: 12
+    hidden_size: 1024     
+    add_pos_embed: True
+    max_seq_len: 1024
     action_dim: 7
     state_dim: 7
-    action_horizon: 8
+    future_action_window_size: 7
+    action_horizon: 8 # need merge with future_action_window_size 
+    past_action_window_size: 0
+    repeated_diffusion_steps: 8
+    noise_beta_alpha: 1.5
+    noise_beta_beta: 1.0
+    noise_s: 0.999
+    num_timestep_buckets: 1000
+    num_inference_timesteps: 4
+    num_target_vision_tokens: 32
+    diffusion_model_cfg:    # DiT Transformers 的参数
+      cross_attention_dim: 2048 # VLM 的 dim
+      dropout: 0.2
+      final_dropout: true
+      interleave_self_attention: true
+      norm_type: "ada_norm"
+      num_layers: 16
+      output_dim: 1024
+      positional_embeddings: null
 
 datasets:
   vlm_data:
-    dataset_py: vlm_datasets
-    dataformat: llava_json
-    dataset_use: sharegpt4v_coco
-    eval_dataset: sharegpt4v_coco
-    data_flatten: false
-    base_interval: 2
-    max_pixels: 307200
-    min_pixels: 784
-    model_max_length: 2048
-    model_type: qwen2.5vl
-    per_device_batch_size: 4
+    # dataset_py: vlm_datasets
+    # dataformat: llava_json
+    # dataset_use: sharegpt4v_coco
+    # eval_dataset: sharegpt4v_coco
+    # data_flatten: false
+    # base_interval: 2
+    # max_pixels: 307200
+    # min_pixels: 784
+    # model_max_length: 2048
+    # model_type: qwen2.5vl
+    # per_device_batch_size: 4
 
   vla_data:
     dataset_py: lerobot_datasets
-    data_root_dir: playground/Datasets/LEROBOT_LIBERO_DATA
+    data_root_dir: /15T/liuyuyan/libero/
     data_mix: libero_all # libero_goal
     action_type: delta_qpos
     sequential_step_sampling: False

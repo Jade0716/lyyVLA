@@ -294,6 +294,200 @@ class Qwen_PI(baseframework):
         normalized_actions = pred_actions.detach().cpu().numpy()
         return {"normalized_actions": normalized_actions}
 
+    @torch.inference_mode()
+    def predict_action_with_attention(
+        self,
+        examples: List[dict] = None,
+        save_dir: str = "./attention_heatmaps",
+        layer_idx: int = -1,
+        attention_type: str = "action_model",  # "vlm" or "action_model"
+        **kwargs,
+    ) -> dict:
+        """
+        推理并生成注意力热力图（基于模型原生attention weights）。
+
+        Args:
+            examples: List[dict], each dict with 'image', 'lang', optional 'state'
+            save_dir: 保存热力图的目录
+            layer_idx: 使用哪一层的attention (default: -1 = 最后一层)
+            attention_type: "action_model" (default) - action model对vision的cross-attention
+                          "vlm" - VLM自己的vision-to-vision self-attention
+
+        Returns:
+            dict: normalized_actions + heatmap_paths (list of paths for all views)
+        """
+        import os
+        os.makedirs(save_dir, exist_ok=True)
+
+        if type(examples) is not list:
+            examples = [examples]
+
+        from deployment.model_server.tools.image_tools import to_pil_preserve
+        from starVLA.model.visual_tools.attention_visualizer import (
+            create_side_by_side,
+            create_multi_layer_heatmap,
+        )
+        import time
+
+        batch_images = [to_pil_preserve(example["image"]) for example in examples]
+        instructions = [example["lang"] for example in examples]
+        state = [example["state"] for example in examples] if "state" in examples[0] else None
+
+        train_obs_image_size = getattr(self.config.datasets.vla_data, "image_size", None)
+        if train_obs_image_size:
+            batch_images = resize_images(batch_images, target_size=train_obs_image_size)
+
+        # 构建输入
+        qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(
+            images=batch_images, instructions=instructions
+        )
+
+        # 获取所有原始图像用于热力图可视化
+        num_images = len(examples[0]["image"]) if examples and "image" in examples[0] else 0
+
+        # 生成保存路径 (每个视角一张)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        instruction_short = instructions[0][:30].replace(" ", "_") if instructions else "inst"
+        save_paths = [os.path.join(save_dir, f"attn_{instruction_short}_view{i}_{timestamp}_{layer_idx}.png") for i in range(num_images)]
+
+        # 计算注意力热力图
+        heatmap_paths = None
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            qwenvl_outputs = self.qwen_vl_interface(
+                **qwen_inputs,
+                output_attentions=True,
+                output_hidden_states=True,
+                return_dict=True,
+            )
+
+            all_hidden = qwenvl_outputs.hidden_states
+            expected_layers = len(self.action_model.model.transformer_blocks)
+            vl_embs_list = list(all_hidden[-expected_layers:])
+            base_hidden = vl_embs_list[-1]
+
+        state_t = torch.from_numpy(np.array(state)).to(base_hidden.device, dtype=base_hidden.dtype) if state is not None else None
+
+        # Get vision token indices from input_ids (IMAGE_TOKEN_INDEX = 248056 for Qwen3.5-VL)
+        input_ids = qwen_inputs.get("input_ids")
+        image_grid_thw = qwen_inputs.get("image_grid_thw")
+        spatial_merge_size = int(self.qwen_vl_interface.model.visual.spatial_merge_size) if hasattr(self.qwen_vl_interface, 'model') and hasattr(self.qwen_vl_interface.model, 'visual') else 2
+
+        if input_ids is not None:
+            input_ids_np = input_ids[0].cpu().numpy()  # first sample in batch】
+            vision_token_indices = np.where(input_ids_np == 248056)[0]  # IMAGE_TOKEN_INDEX for Qwen3.5-VL
+            if len(vision_token_indices) > 0:
+                vision_token_indices = torch.from_numpy(vision_token_indices).long().to(base_hidden.device)
+            else:
+                vision_token_indices = None
+        else:
+            vision_token_indices = None
+
+        if attention_type == "action_model":
+            # Compute action model's cross-attention to vision tokens
+            try:
+                pred_actions, all_layers_attention = self.action_model.predict_action_with_attention(
+                    vl_embs_list,
+                    state_t,
+                    layer_idx=layer_idx,
+                    vision_token_indices=vision_token_indices,
+                )
+
+
+                # all_layers_attention is dict: {layer_idx: {'first_view': tensor, 'second_view': tensor}}
+                num_layers = len(all_layers_attention)
+                if num_layers == 0:
+                    heatmap_paths = None
+                else:
+                    if image_grid_thw is not None:
+                        grid = image_grid_thw[0].cpu().numpy()
+                        t, h, w = int(grid[0]), int(grid[1]), int(grid[2])
+                        merged_h, merged_w = h // spatial_merge_size, w // spatial_merge_size
+                    else:
+                        merged_h, merged_w = 8, 8
+
+                    for view_idx, view_name in enumerate(['first_view', 'second_view']):
+                        if view_idx >= num_images:
+                            continue
+
+                        save_p = save_paths[view_idx] if view_idx < len(save_paths) else None
+                        if save_p is None:
+                            continue
+
+                        if examples[0]["image"][view_idx] is not None:
+                            original_img_view = np.array(examples[0]["image"][view_idx])
+                        else:
+                            continue
+
+                        # Collect heatmaps for all layers
+                        heatmaps_list = []
+                        layer_names_list = []
+                        for layer_i in range(num_layers):
+                            view_attn = all_layers_attention[layer_i][view_name]
+                            if view_attn is None or view_attn.shape[0] == 0:
+                                heatmaps_list.append(np.zeros((merged_h, merged_w), dtype=np.float32))
+                            else:
+                                vis_attn_2d = view_attn.float().mean(axis=0).reshape(merged_h, merged_w)
+                                if isinstance(vis_attn_2d, torch.Tensor):
+                                    vis_attn_2d = vis_attn_2d.cpu().numpy()
+                                heatmaps_list.append(vis_attn_2d)
+                            layer_names_list.append(f"Layer {layer_i}")
+
+                        # Use PIL/cv2 based function for fast rendering
+                        create_multi_layer_heatmap(
+                            image=original_img_view,
+                            heatmaps=heatmaps_list,
+                            layer_names=layer_names_list,
+                            colormap='jet',
+                            alpha=0.5,
+                            n_cols=4,
+                            save_path=save_p
+                        )
+                        print(f"Action model cross-attention for view {view_idx} (all {num_layers} layers) saved to {save_p}")
+
+                    heatmap_paths = [save_paths[i] if i < len(save_paths) else None for i in range(2)]
+            except Exception as e:
+                print(f"Cross-attention computation failed: {e}")
+                import traceback
+                traceback.print_exc()
+                # Fallback to normal prediction
+                with torch.autocast("cuda", dtype=torch.float32):
+                    pred_actions = self.action_model.predict_action(vl_embs_list, state_t)
+
+        # elif attention_type == "vlm":
+        #     # Compute VLM's vision-to-vision self-attention
+        #     heatmap_paths = []
+        #     if qwenvl_outputs.attentions is not None:
+        #         try:
+        #             heatmap_2d, _ = compute_attention_heatmap(
+        #                 self.qwen_vl_interface,
+        #                 qwen_inputs,
+        #                 layer_idx=layer_idx,
+        #             )
+        #             # VLM attention is for the whole image, save for each view
+        #             for i, save_p in enumerate(save_paths):
+        #                 if i < num_images and examples[0]["image"][i] is not None:
+        #                     original_img_view = np.array(examples[0]["image"][i])
+        #                     create_side_by_side(original_img_view, heatmap_2d, save_path=save_p)
+        #                     heatmap_paths.append(save_p)
+        #                 else:
+        #                     heatmap_paths.append(None)
+        #         except Exception as e:
+        #             print(f"Attention heatmap computation failed: {e}")
+        #             import traceback
+        #             traceback.print_exc()
+        #             heatmap_paths = [None] * num_images
+        #     # VLM attention doesn't use action_model cross-attention, so call predict_action
+        #     with torch.autocast("cuda", dtype=torch.float32):
+        #         pred_actions = self.action_model.predict_action(vl_embs_list, state_t)
+
+        else:
+            # Default behavior: just predict actions
+            with torch.autocast("cuda", dtype=torch.float32):
+                pred_actions = self.action_model.predict_action(vl_embs_list, state_t)
+
+        normalized_actions = pred_actions.detach().float().cpu().numpy()
+        return {"normalized_actions": normalized_actions, "heatmap_paths": heatmap_paths}
+
 
 if __name__ == "__main__":
     import argparse

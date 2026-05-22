@@ -13,6 +13,7 @@ Conventions:
 # Standard Library
 import argparse
 import json
+import warnings
 import os
 import time
 from pathlib import Path
@@ -37,6 +38,7 @@ from starVLA.model.framework.base_framework import build_framework
 from starVLA.model.framework.share_tools import apply_config_compat
 from starVLA.training.trainer_utils.config_tracker import AccessTrackedConfig, wrap_config
 from starVLA.training.trainer_utils.trainer_tools import TrainerUtils, build_param_lr_groups, setup_optimizer_and_scheduler, normalize_dotlist_args
+
 
 deepspeed_plugin = DeepSpeedPlugin()
 accelerator = Accelerator(deepspeed_plugin=deepspeed_plugin)
@@ -435,6 +437,8 @@ def main(cfg) -> None:
         lr_scheduler=lr_scheduler,
         accelerator=accelerator,
     )
+    warnings.filterwarnings("ignore", category=UserWarning, module="torchvision")
+
 
     trainer.prepare_training()
     trainer.train()

@@ -1,293 +1,430 @@
-import dataclasses
+# Copyright 2025 starVLA community. All rights reserved.
+# Licensed under the MIT License, Version 1.0 (the "License");
+# Implemented by [Jinhui YE / HKUST University] in [2025].
+
+"""
+StarVLA’s trainer is built directly on native PyTorch + Accelerate + DeepSpeed, keeping the loop explicit and easy to hack.
+Conventions:
+1. Store runtime state in dicts where possible (simplifies data info, procesing info, config, etc).
+2. Use multiple dataloaders to adapt heterogeneous data types / task mixtures.
+3. Put each training strategy in its own `trainer_*.py` file (avoid large if‑else chains).
+"""
+
+# Standard Library
+import argparse
 import json
-import logging
-import math
+import warnings
 import os
-import pathlib
+import re
 import time
+from pathlib import Path
+from typing import Tuple
 
-import imageio
+# Third-Party Libraries
 import numpy as np
-import tqdm
-import tyro
-from libero.libero import benchmark, get_libero_path
-from libero.libero.envs import OffScreenRenderEnv
+import torch
+import torch.distributed as dist
+import wandb
+from accelerate import Accelerator, DeepSpeedPlugin
+from accelerate.logging import get_logger
+from accelerate.utils import set_seed
+from omegaconf import OmegaConf
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+from transformers import AutoProcessor, get_scheduler
 
+# Local Modules
+from starVLA.dataloader import build_dataloader
+from starVLA.model.framework import build_framework
+from starVLA.training.trainer_utils.config_tracker import AccessTrackedConfig, wrap_config
+from starVLA.training.trainer_utils.trainer_tools import TrainerUtils, build_param_lr_groups, normalize_dotlist_args
+
+deepspeed_plugin = DeepSpeedPlugin()
+accelerator = Accelerator(deepspeed_plugin=deepspeed_plugin)
+accelerator.print(accelerator.state)
+
+# Sane Defaults
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-from examples.LIBERO.eval_files.model2libero_interface import ModelClient
 
-LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
-LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
-
-
-def _binarize_gripper_open(open_val: np.ndarray | float) -> np.ndarray:
-    arr = np.asarray(open_val, dtype=np.float32).reshape(-1)
-    v = float(arr[0])
-    bin_val = 1.0 - 2.0 * (v > 0.5)
-    return np.asarray([bin_val], dtype=np.float32)
+# Initialize logger
+logger = get_logger(__name__)
 
 
-@dataclasses.dataclass
-class Args:
-    host: str = "127.0.0.1"
-    port: int = 10093
-
-    #################################################################################################################
-    # LIBERO environment-specific parameters
-    #################################################################################################################
-    task_suite_name: str = (
-        "libero_goal"  # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
-    )
-    num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize i n sim
-    num_trials_per_task: int = 50  # Number of rollouts per task
-    max_tasks: int = -1  # If > 0, limit the number of tasks evaluated (smoke / quick check). -1 = run all.
-
-    #################################################################################################################
-    # Utils
-    #################################################################################################################
-    video_out_path: str = "experiments/libero/logs"  # Path to save videos
-
-    seed: int = 7  # Random Seed (for reproducibility)
-
-    pretrained_path: str = ""
-
-    # Dataset key for un-normalization. None = auto (only if model trained on a single dataset).
-    unnorm_key: str | None = None
-
-    post_process_action: bool = True
-
-    job_name: str = "test"
+def load_fast_tokenizer():
+    return AutoProcessor.from_pretrained("physical-intelligence/fast", trust_remote_code=True)
 
 
-def eval_libero(args: Args) -> None:
-    logging.info(f"Arguments: {json.dumps(dataclasses.asdict(args), indent=4)}")
+def setup_directories(cfg) -> Path:
+    """Create output directory and checkpoint directory."""
+    cfg.output_dir = os.path.join(cfg.run_root_dir, cfg.run_id)
+    output_dir = Path(cfg.output_dir)
 
-    # Set random seed
-    np.random.seed(args.seed)
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(output_dir / "checkpoints", exist_ok=True)
 
-    # Initialize LIBERO task suite
-    benchmark_dict = benchmark.get_benchmark_dict()
-    task_suite = benchmark_dict[args.task_suite_name]()
-    num_tasks_in_suite = task_suite.n_tasks
-    logging.info(f"Task suite: {args.task_suite_name}")
+    return output_dir
 
-    # args.video_out_path = f"{date_base}+{args.job_name}"
 
-    pathlib.Path(args.video_out_path).mkdir(parents=True, exist_ok=True)
+def prepare_data(cfg, accelerator, output_dir) -> DataLoader:
+    """Prepare VLA training data."""
+    logger.info(f"Creating VLA Dataset with Mixture `{cfg.datasets.vla_data.data_mix}`")
+    vla_train_dataloader = build_dataloader(cfg=cfg, dataset_py=cfg.datasets.vla_data.dataset_py)
 
-    if args.task_suite_name == "libero_spatial":
-        max_steps = 220  # longest training demo has 193 steps
-    elif args.task_suite_name == "libero_object":
-        max_steps = 280  # longest training demo has 254 steps
-    elif args.task_suite_name == "libero_goal":
-        max_steps = 300  # longest training demo has 270 steps
-    elif args.task_suite_name == "libero_10":
-        max_steps = 520  # longest training demo has 505 steps
-    elif args.task_suite_name == "libero_90":
-        max_steps = 400  # longest training demo has 373 steps
-    else:
-        raise ValueError(f"Unknown task suite: {args.task_suite_name}")
+    accelerator.dataloader_config.dispatch_batches = False
+    dist.barrier()
+    return vla_train_dataloader
 
-    client_model = ModelClient(
-        host=args.host,
-        port=args.port,
-        unnorm_key=args.unnorm_key,
+
+def setup_optimizer_and_scheduler(model, cfg) -> Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler._LRScheduler]:
+    """Set optimizer and scheduler."""
+    param_groups = build_param_lr_groups(model=model, cfg=cfg)
+    optimizer = torch.optim.AdamW(
+        param_groups,
+        lr=cfg.trainer.learning_rate.base,
+        betas=tuple(cfg.trainer.optimizer.betas),
+        weight_decay=cfg.trainer.optimizer.weight_decay,
+        eps=cfg.trainer.optimizer.eps,
     )
 
-    # Optional smoke-test cap (still useful for quick verification with -1 = full run).
-    n_eval_tasks = num_tasks_in_suite if args.max_tasks <= 0 else min(args.max_tasks, num_tasks_in_suite)
-    logging.info(f"Evaluating {n_eval_tasks} of {num_tasks_in_suite} tasks (max_tasks={args.max_tasks})")
+    if dist.is_initialized() and dist.get_rank() == 0:
+        for group in optimizer.param_groups:
+            logger.info(f"LR Group {group['name']}: lr={group['lr']}, num_params={len(group['params'])}")
 
-    # Start evaluation
-    total_episodes, total_successes = 0, 0
-    for task_id in tqdm.tqdm(range(n_eval_tasks)):
-        # Get task
-        task = task_suite.get_task(task_id)
+    lr_scheduler = get_scheduler(
+        name=cfg.trainer.lr_scheduler_type,
+        optimizer=optimizer,
+        num_warmup_steps=cfg.trainer.num_warmup_steps,
+        num_training_steps=cfg.trainer.max_train_steps,
+        scheduler_specific_kwargs=cfg.trainer.scheduler_specific_kwargs,
+    )
 
-        # Get default LIBERO initial states
-        initial_states = task_suite.get_task_init_states(task_id)
+    return optimizer, lr_scheduler
 
-        # Initialize LIBERO environment and task description
-        env, task_description = _get_libero_env(task, LIBERO_ENV_RESOLUTION, args.seed)
 
-        # Start episodes
-        task_episodes, task_successes = 0, 0
-        for episode_idx in tqdm.tqdm(range(args.num_trials_per_task)):
-            logging.info(f"\nTask: {task_description}")
+class VLATrainer(TrainerUtils):
+    def __init__(self, cfg, model, vla_train_dataloader, optimizer, lr_scheduler, accelerator):
+        self.config = cfg
+        self.model = model
+        self.vla_train_dataloader = vla_train_dataloader
+        self.optimizer = optimizer
+        self.lr_scheduler = lr_scheduler
+        self.accelerator = accelerator
 
-            # Reset environment
-            client_model.reset(task_description=task_description)  # Reset the client connection
-            env.reset()
+        self.completed_steps = 0
+        self.total_batch_size = self._calculate_total_batch_size()
 
-            # Set initial states
-            obs = env.set_init_state(initial_states[episode_idx])
+    def prepare_training(self):
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        seed = self.config.seed + rank if hasattr(self.config, "seed") else rank + 3047
+        set_seed(seed)
 
-            # Setup
-            t = 0
-            replay_images = []
-            full_actions = []
+        self._init_checkpointing()
+        self._adjust_lr_scheduler_for_resume()
 
-            logging.info(f"Starting episode {task_episodes + 1}...")
-            step = 0
+        freeze_modules = (
+            self.config.trainer.freeze_modules
+            if (self.config and hasattr(self.config.trainer, "freeze_modules"))
+            else None
+        )
+        self.model = self.freeze_backbones(self.model, freeze_modules=freeze_modules)
+        self.print_trainable_parameters(self.model)
 
-            # full_actions = np.load("./debug/action.npy")
+        self.model, self.optimizer, self.vla_train_dataloader = self.setup_distributed_training(
+            self.accelerator,
+            self.model,
+            self.optimizer,
+            self.vla_train_dataloader,
+        )
 
-            while t < max_steps + args.num_steps_wait:
-                # try:
-                # IMPORTANT: Do nothing for the first few timesteps because the simulator drops objects
-                # and we need to wait for them to fall
-                if t < args.num_steps_wait:
-                    obs, reward, done, info = env.step(LIBERO_DUMMY_ACTION)
-                    t += 1
-                    continue
+        self._init_wandb()
 
-                # IMPORTANT: rotate 180 degrees to match train preprocessing
-                img = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
-                wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
+    def _calculate_total_batch_size(self):
+        """Calculate global batch size."""
+        return (
+            self.config.datasets.vla_data.per_device_batch_size
+            * self.accelerator.num_processes
+            * self.accelerator.gradient_accumulation_steps
+        )
 
-                # Save preprocessed image for replay video
-                replay_images.append(img)
-
-                state = np.concatenate(
-                    (
-                        obs["robot0_eef_pos"],
-                        _quat2axisangle(obs["robot0_eef_quat"]),
-                        obs["robot0_gripper_qpos"],
-                    )
-                )
-
-                observation = {  #
-                    "observation.primary": np.expand_dims(img, axis=0),  # (H, W, C), dtype=unit8, range(0-255)
-                    "observation.wrist_image": np.expand_dims(wrist_img, axis=0),  # (H, W, C)
-                    "observation.state": np.expand_dims(state, axis=0),
-                    "instruction": [str(task_description)],
-                }
-
-                # align key with model API --> two images provided here --> check training
-                example_dict = {
-                    "image": [observation["observation.primary"][0], observation["observation.wrist_image"][0]],
-                    "lang": observation["instruction"][0],
-                }
-
-                start_time = time.time()
-
-                response = client_model.step(example=example_dict, step=step)
-
-                end_time = time.time()
-                # print(f"time: {end_time - start_time}")
-
-                # #
-                raw_action = response["raw_action"]
-
-                world_vector_delta = np.asarray(raw_action.get("world_vector"), dtype=np.float32).reshape(-1)
-                rotation_delta = np.asarray(raw_action.get("rotation_delta"), dtype=np.float32).reshape(-1)
-                open_gripper = np.asarray(raw_action.get("open_gripper"), dtype=np.float32).reshape(-1)
-                gripper = _binarize_gripper_open(open_gripper)
-
-                if not (world_vector_delta.size == 3 and rotation_delta.size == 3 and open_gripper.size == 1):
-                    logging.warning(
-                        f"Unexpected action sizes: "
-                        f"wv={world_vector_delta.shape}, rot={rotation_delta.shape}, grip={gripper.shape}. "
-                        f"Falling back to LIBERO_DUMMY_ACTION."
-                    )
-                    raise ValueError(
-                        f"Invalid action sizes: world_vector={world_vector_delta.shape}, "
-                        f"rotation_delta={rotation_delta.shape}, gripper={gripper.shape}"
-                    )
-                else:
-                    delta_action = np.concatenate([world_vector_delta, rotation_delta, gripper], axis=0)
-
-                full_actions.append(delta_action)
-
-                # __import__("ipdb").set_trace()
-                # see ../robosuite/controllers/controller_factory.py
-                obs, reward, done, info = env.step(delta_action.tolist())
-                if done:
-                    task_successes += 1
-                    total_successes += 1
-                    break
-                t += 1
-                step += 1
-
-            task_episodes += 1
-            total_episodes += 1
-
-            # Save a replay video of the episode
-            suffix = "success" if done else "failure"
-            task_segment = task_description.replace(" ", "_")
-            imageio.mimwrite(
-                pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4",
-                [np.asarray(x) for x in replay_images],
-                fps=10,
+    def _init_wandb(self):
+        """Initialize Weights & Biases."""
+        if self.accelerator.is_main_process:
+            wandb.init(
+                name=self.config.run_id,
+                dir=os.path.join(self.config.output_dir, "wandb"),
+                project=self.config.wandb_project,
+                entity=self.config.wandb_entity,
+                group="vla-train",
             )
 
-            full_actions = np.stack(full_actions)
-            # np.save(pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.npy", full_actions)
+    def _init_checkpointing(self):
+        """Initialize checkpoint directory and handle checkpoint loading."""
+        self.checkpoint_dir = os.path.join(self.config.output_dir, "checkpoints")
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
 
-            # print(pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4")
-            # Log current results
-            logging.info(f"Success: {done}")
-            logging.info(f"# episodes completed so far: {total_episodes}")
-            logging.info(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
+        pretrained_checkpoint = getattr(self.config.trainer, "pretrained_checkpoint", None)
+        is_resume = getattr(self.config.trainer, "is_resume", False)
+        self.resume_from_checkpoint = pretrained_checkpoint
 
-        # Log final results
-        logging.info(f"Current task success rate: {float(task_successes) / float(task_episodes)}")
-        logging.info(f"Current total success rate: {float(total_successes) / float(total_episodes)}")
+        if is_resume:
+            resume_from_checkpoint, self.completed_steps = self._get_latest_checkpoint(self.checkpoint_dir)
+            if resume_from_checkpoint:
+                self.resume_from_checkpoint = resume_from_checkpoint
+                self.model = self.load_pretrained_backbones(self.model, self.resume_from_checkpoint, reload_modules=None)
+                logger.info(
+                    f"Resuming training from checkpoint: {self.resume_from_checkpoint}, steps: {self.completed_steps}"
+                )
+                return
 
-    logging.info(f"Total success rate: {float(total_successes) / float(total_episodes)}")
-    logging.info(f"Total episodes: {total_episodes}")
+            logger.warning(f"No valid checkpoint found in {self.checkpoint_dir}. Starting training from scratch.")
+            self.completed_steps = 0
+
+        if pretrained_checkpoint:
+            reload_modules = getattr(self.config.trainer, "reload_modules", None)
+            self.model = self.load_pretrained_backbones(self.model, pretrained_checkpoint, reload_modules=reload_modules)
+            self.completed_steps = 0
+            self.resume_from_checkpoint = pretrained_checkpoint
+            logger.info(f"Loaded pretrained checkpoint: {pretrained_checkpoint}, steps: {self.completed_steps}")
+        else:
+            logger.info("No pretrained checkpoint provided. Starting training from scratch.")
+            self.completed_steps = 0
+
+    def _adjust_lr_scheduler_for_resume(self):
+        """Adjust LR scheduler state after resuming from non-zero steps."""
+        if self.completed_steps > 0:
+            logger.info(f"Adjusting LR scheduler for resume from step {self.completed_steps}")
+            for _ in range(self.completed_steps):
+                self.lr_scheduler.step()
+            logger.info(
+                f"LR scheduler adjusted to step {self.completed_steps}, current LR: {self.lr_scheduler.get_last_lr()}"
+            )
+
+    def _load_checkpoint(self, checkpoint_path):
+        """Load checkpoint."""
+        self.accelerator.load_state(checkpoint_path)
+        self.accelerator.print(f"Resumed from checkpoint: {checkpoint_path}")
+
+    def _save_checkpoint(self):
+        """Save current training state."""
+        if self.accelerator.is_main_process:
+            save_format = getattr(self.config.trainer, "save_format", "pt")
+            checkpoint_path = os.path.join(self.checkpoint_dir, f"steps_{self.completed_steps}")
+
+            state_dict = self.accelerator.get_state_dict(self.model)
+            if save_format == "safetensors":
+                from safetensors.torch import save_file
+
+                save_file(state_dict, checkpoint_path + "_model.safetensors")
+            elif save_format == "pt":
+                torch.save(state_dict, checkpoint_path + "_pytorch_model.pt")
+            else:
+                raise ValueError(f"Unsupported save_format `{save_format}`. Expected `pt` or `safetensors`.")
+
+            summary_data = {"steps": self.completed_steps}
+            with open(os.path.join(self.config.output_dir, "summary.jsonl"), "a") as f:
+                f.write(json.dumps(summary_data) + "\n")
+            self.accelerator.print(f"✅ Checkpoint saved at {checkpoint_path}")
+
+            if isinstance(self.config, AccessTrackedConfig):
+                logger.info("📊 Saving accessed configuration...")
+                output_dir = Path(self.config.output_dir)
+                self.config.save_accessed_config(output_dir / "config.yaml", use_original_values=False)
+                logger.info("✅ Configuration files saved")
+
+        self.accelerator.wait_for_everyone()
+
+    def _log_metrics(self, metrics):
+        """Record training metrics."""
+        if self.completed_steps % self.config.trainer.logging_frequency == 0 and dist.get_rank() == 0:
+            metrics["learning_rate"] = self.lr_scheduler.get_last_lr()[0]
+            metrics["epoch"] = round(self.completed_steps / len(self.vla_train_dataloader), 2)
+            wandb.log(metrics, step=self.completed_steps)
+            logger.info(f"Step {self.completed_steps}, Loss: {metrics})")
+
+    def _create_data_iterators(self):
+        """Create data iterators."""
+        self.vla_iter = iter(self.vla_train_dataloader)
+
+    def _get_next_batch(self):
+        """Get next batch (automatically handle data loop)."""
+        try:
+            batch_vla = next(self.vla_iter)
+        except StopIteration:
+            if not hasattr(self, "vla_epoch_count"):
+                self.vla_epoch_count = 0
+            self.vla_iter, self.vla_epoch_count = TrainerUtils._reset_dataloader(
+                self.vla_train_dataloader, self.vla_epoch_count
+            )
+            batch_vla = next(self.vla_iter)
+
+        return batch_vla
+
+    def train(self):
+        """Execute training loop."""
+        self._log_training_config()
+        self._create_data_iterators()
+        progress_bar = tqdm(
+            range(self.config.trainer.max_train_steps), disable=not self.accelerator.is_local_main_process
+        )
+
+        while self.completed_steps < self.config.trainer.max_train_steps:
+            t_start_data = time.perf_counter()
+            batch_vla = self._get_next_batch()
+            t_end_data = time.perf_counter()
+
+            t_start_model = time.perf_counter()
+            step_metrics = self._train_step(batch_vla)
+            t_end_model = time.perf_counter()
+
+            if self.accelerator.sync_gradients:
+                progress_bar.update(1)
+                self.completed_steps += 1
+
+            if self.accelerator.is_local_main_process:
+                progress_bar.set_postfix(
+                    {
+                        "data_times": f"{t_end_data - t_start_data:.3f}",
+                        "model_times": f"{t_end_model - t_start_model:.3f}",
+                    }
+                )
+
+            if self.completed_steps % self.config.trainer.eval_interval == 0:
+                step_metrics = self.eval_action_model(step_metrics)
+
+            step_metrics["data_time"] = t_end_data - t_start_data
+            step_metrics["model_time"] = t_end_model - t_start_model
+            self._log_metrics(step_metrics)
+
+            if self.completed_steps % self.config.trainer.save_interval == 0 and self.completed_steps > 0:
+                self._save_checkpoint()
+
+            if self.completed_steps >= self.config.trainer.max_train_steps:
+                break
+
+        self._finalize_training()
+
+    def eval_action_model(self, step_metrics: dict = None) -> float:
+        """Run simple action-eval on current batch and attach score to metrics."""
+        examples = self._get_next_batch()
+        actions = [example["action"] for example in examples]
+        output_dict = self.model.predict_action(examples=examples, use_ddim=True, num_ddim_steps=20)
+
+        if self.accelerator.is_main_process:
+            normalized_actions = output_dict["normalized_actions"]
+            actions = np.array(actions)
+            num_pots = np.prod(actions.shape)
+            score = TrainerUtils.euclidean_distance(normalized_actions, actions)
+            step_metrics["mse_score"] = score / num_pots
+
+        del examples
+        dist.barrier()
+        return step_metrics
+
+    def _log_training_config(self):
+        """Record training config."""
+        if self.accelerator.is_main_process:
+            logger.info("***** Training Configuration *****")
+            logger.info(f"  Total optimization steps = {self.config.trainer.max_train_steps}")
+            logger.info(f"  Per device batch size = {self.config.datasets.vla_data.per_device_batch_size}")
+            logger.info(f"  Gradient accumulation steps z= {self.config.trainer.gradient_accumulation_steps}")
+            logger.info(f"  Total batch size = {self.total_batch_size}")
+
+    def _train_step(self, batch_vla, batch_vlm=None):
+        """Execute single training step."""
+        with self.accelerator.accumulate(self.model):
+            self.optimizer.zero_grad()
+
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                output_dict = self.model.forward(batch_vla)
+                action_loss = output_dict["action_loss"]
+                total_loss = action_loss
+
+            self.accelerator.backward(total_loss)
+
+            if self.config.trainer.gradient_clipping is not None:
+                self.accelerator.clip_grad_norm_(self.model.parameters(), self.config.trainer.gradient_clipping)
+
+            self.optimizer.step()
+            self.lr_scheduler.step()
+
+        return {
+            "action_dit_loss": action_loss.item(),
+        }
+
+    def _finalize_training(self):
+        """Training end processing."""
+        if self.accelerator.is_main_process:
+            save_format = getattr(self.config.trainer, "save_format", "pt")
+            final_checkpoint = os.path.join(self.config.output_dir, "final_model")
+            os.makedirs(final_checkpoint, exist_ok=True)
+            state_dict = self.accelerator.get_state_dict(self.model)
+            if save_format == "safetensors":
+                from safetensors.torch import save_file
+
+                save_file(state_dict, os.path.join(final_checkpoint, "model.safetensors"))
+            elif save_format == "pt":
+                torch.save(state_dict, os.path.join(final_checkpoint, "pytorch_model.pt"))
+            else:
+                raise ValueError(f"Unsupported save_format `{save_format}`. Expected `pt` or `safetensors`.")
+            logger.info(f"Training complete. Final model saved at {final_checkpoint}")
+
+        if self.accelerator.is_main_process:
+            wandb.finish()
+
+        self.accelerator.wait_for_everyone()
 
 
-def _get_libero_env(task, resolution, seed):
-    """Initializes and returns the LIBERO environment, along with the task description."""
-    task_description = task.language
-    task_bddl_file = pathlib.Path(get_libero_path("bddl_files")) / task.problem_folder / task.bddl_file
-    env_args = {
-        "bddl_file_name": task_bddl_file,
-        "camera_heights": resolution,
-        "camera_widths": resolution,
-    }
-    env = OffScreenRenderEnv(**env_args)
-    env.seed(seed)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
-    return env, task_description
+def main(cfg) -> None:
+    logger.info("VLA Training :: Warming Up")
 
+    cfg = wrap_config(cfg)
+    logger.info("✅ Configuration wrapped for access tracking")
 
-def _quat2axisangle(quat):
-    """
-    Copied from robosuite: https://github.com/ARISE-Initiative/robosuite/blob/eafb81f54ffc104f905ee48a16bb15f059176ad3/robosuite/utils/transform_utils.py#L490C1-L512C55
-    """
-    # clip quaternion
-    if quat[3] > 1.0:
-        quat[3] = 1.0
-    elif quat[3] < -1.0:
-        quat[3] = -1.0
+    output_dir = setup_directories(cfg=cfg)
+    vla = build_framework(cfg)
+    vla_train_dataloader = prepare_data(cfg=cfg, accelerator=accelerator, output_dir=output_dir)
+    optimizer, lr_scheduler = setup_optimizer_and_scheduler(model=vla, cfg=cfg)
 
-    den = np.sqrt(1.0 - quat[3] * quat[3])
-    if math.isclose(den, 0.0):
-        # This is (close to) a zero degree rotation, immediately return
-        return np.zeros(3)
+    trainer = VLATrainer(
+        cfg=cfg,
+        model=vla,
+        vla_train_dataloader=vla_train_dataloader,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        accelerator=accelerator,
+    )
 
-    return (quat[:3] * 2.0 * math.acos(quat[3])) / den
+    warnings.filterwarnings("ignore", category=UserWarning, module="torchvision")
 
+    trainer.prepare_training()
+    trainer.train()
 
-def start_debugpy_once():
-    import debugpy
-
-    if getattr(start_debugpy_once, "_started", False):
-        return
-    debugpy.listen(("0.0.0.0", 10092))
-    print("🔍 Waiting for VSCode attach on 0.0.0.0:10092 ...")
-    debugpy.wait_for_client()
-    start_debugpy_once._started = True
+    logger.info("... and that's all, folks!")
+    dist.barrier()
+    dist.destroy_process_group()
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s  %(levelname)-8s | %(message)s",
-        datefmt="%m/%d [%H:%M:%S]",
-        force=True,
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--config_yaml",
+        type=str,
+        default="starVLA/config/training/starvla_cotrain_oxe.yaml",
+        help="Path to YAML config",
     )
-    if os.getenv("DEBUG", False):
-        start_debugpy_once()
-    tyro.cli(eval_libero)
+    args, clipargs = parser.parse_known_args()
+
+    cfg = OmegaConf.load(args.config_yaml)
+    dotlist = normalize_dotlist_args(clipargs)
+    cli_cfg = OmegaConf.from_dotlist(dotlist)
+    cfg = OmegaConf.merge(cfg, cli_cfg)
+
+    if cfg.is_debug and dist.is_initialized() and dist.get_rank() == 0:
+        import debugpy
+
+        debugpy.listen(("0.0.0.0", 10092))
+        print("🔍 Rank 0 waiting for debugger attach on port 10092...")
+        debugpy.wait_for_client()
+
+    main(cfg)

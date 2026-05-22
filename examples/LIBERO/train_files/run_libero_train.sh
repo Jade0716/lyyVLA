@@ -24,10 +24,10 @@ mkdir -p ${output_dir}
 # mv this script to the output dir
 cp $0 ${output_dir}/
 
-
+export CUDA_VISIBLE_DEVICES=2
 accelerate launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
-  --num_processes 4 \
+  --num_processes 1 \
   starVLA/training/train_starvla.py \
   --config_yaml ${config_yaml} \
   --trainer.vla_data.video_backend torchvision_av \

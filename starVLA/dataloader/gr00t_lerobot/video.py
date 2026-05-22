@@ -154,7 +154,7 @@ def get_frames_by_timestamps(
         if not TORCHCODEC_AVAILABLE:
             raise ImportError("torchcodec is not available.")
         decoder = torchcodec.decoders.VideoDecoder(
-            video_path, device="cpu", dimension_order="NHWC", num_ffmpeg_threads=0
+            video_path,device="cpu", dimension_order="NHWC", num_ffmpeg_threads=0
         )
         return decoder.get_frames_played_at(seconds=timestamps).data.numpy()
     elif video_backend == "opencv":

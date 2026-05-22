@@ -26,10 +26,10 @@ mkdir -p ${output_dir}
 cp $0 ${output_dir}/
 
 
-export CUDA_VISIBLE_DEVICES=1,2,3
+export CUDA_VISIBLE_DEVICES=2
 accelerate launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
-  --num_processes 3 \
+  --num_processes 1 \
   starVLA/training/train_starvla.py \
   --config_yaml ${config_yaml} \
   --trainer.freeze_modules ${freeze_module_list} \

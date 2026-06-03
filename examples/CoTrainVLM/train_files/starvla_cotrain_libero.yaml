@@ -23,7 +23,6 @@ framework:
     state_dim: 7
     action_horizon: 8 # need merge with future_action_window_size 
 
-    repeated_diffusion_steps: 8
     noise_beta_alpha: 1.5
     noise_beta_beta: 1.0
     noise_s: 0.999
@@ -66,6 +65,7 @@ datasets:
     video_backend: torchvision_av
 
 trainer:
+  repeated_diffusion_steps: 8
   max_train_steps: 100000
   num_warmup_steps: 5000
   save_interval: 5000

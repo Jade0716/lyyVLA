@@ -24,7 +24,6 @@ framework:
     state_dim: 14
     action_horizon: 50
 
-    repeated_diffusion_steps: 8
     noise_beta_alpha: 1.5
     noise_beta_beta: 1.0
     noise_s: 0.999
@@ -68,6 +67,7 @@ datasets:
     video_backend: pyav
 
 trainer:
+  repeated_diffusion_steps: 8
   max_train_steps: 1000000
   num_warmup_steps: 5000
   save_interval: 5000
@@ -85,7 +85,7 @@ trainer:
     vlm: 0.1
   # pretrained_checkpoint: ./results/Checkpoints/1_need/0601_qwenact_fixqwen_32gpus_lr_1e-3_qformer_36_37/steps_100000/pytorch_model.pt
   # reload_modules: 'action_model,layer_qformer' # warning: this may cause model to not converge
-  # repeated_diffusion_steps moved to framework.action_model.repeated_diffusion_steps
+  # repeated_diffusion_steps is configured in trainer.repeated_diffusion_steps
   max_grad_norm: 1.0
   weight_decay: 0.0
   logging_frequency: 10

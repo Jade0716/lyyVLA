@@ -2,8 +2,9 @@
 # Licensed under the MIT License, Version 1.0 (the "License");
 # Implemented by Jinhui YE / HKUST University] in [2025].
 """
-QwenPI_v3 Framework
+QwenOnlyLanguage_v3 Framework
 A Qwen2.5-VL / Qwen3-VL + layer-wise cross-DiT flow-matching action head.
+Only uses non-vision (language) tokens to update actions.
 
 Released checkpoint
 ─────────────────────────────
@@ -11,24 +12,21 @@ Released checkpoint
   SimplerEnv WidowX:
   https://huggingface.co/StarVLA/Qwen3VL-PI_v3-Bridge-RT_1
 
-Key improvements over QwenPI
+Key features
 ─────────────────────────────
-1. **Compressed Action DiT via per-layer projectors**
+1. **Language-only token updates**
+   Only non-vision tokens are used for action prediction - vision tokens are filtered out
+   before feeding the Action DiT.
+
+2. **Compressed Action DiT via per-layer projectors**
    Each of the N VLM hidden-state layers is passed through a dedicated
    LayerNorm + Linear projector (`project_layers`) that maps the VLM hidden
    dimension (e.g. 2560) down to a smaller Action DiT latent dimension
-   (e.g. 1024, controlled by `action_dit_hidden_dim`).  This reduces the
-   action head parameter count by ~(vl_hidden / dit_hidden)² while keeping
-   the full layer-wise cross-attention structure.
+   (e.g. 1024, controlled by `action_dit_hidden_dim`).
 
-2. **Discretised-state language injection** (`add_discretized_state_to_instruction`)
+3. **Discretised-state language injection** (`add_discretized_state_to_instruction`)
    Proprioceptive state is quantised into 256 bins and appended to the
-   language instruction as plain tokens (``[STATE] <bins> [ACTION]``),
-   following the π₀.5 design.  This lets the VLM attend to state without
-   any extra encoder module.
-
-Together these two features bring QwenPI_v3 close to all the core
-capabilities of π₀.5 within a single open-weight VLM framework.
+   language instruction as plain tokens (``[STATE] <bins> [ACTION]``).
 
 Parameter breakdown (Qwen3-VL-4B + action_dit_hidden_dim=1024)
 ═══════════════════════════════════════════════════════════════
@@ -69,26 +67,13 @@ IGNORE_INDEX = -100
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  Default Config for QwenPI_v3
-#  - Same shape as QwenPIDefaultConfig (see QwenPI.py) but introduces the
-#    optional `action_dit_hidden_dim` knob inside diffusion_model_cfg.
-#  - Setting action_dit_hidden_dim to a value smaller than the VLM hidden
-#    size lets the Action DiT run at a "compressed" latent dim while
-#    `Qwen_PI_v3.project_layers` does the LayerNorm+Linear compression of
-#    each VL hidden state to that dim.
-#  - Leaving it None (or omitting it from YAML) reproduces the QwenPI
-#    behaviour: DiT hidden = VLM hidden, projection becomes nn.Identity().
+#  Default Config for QwenOnlyLanguage_v3
 # ──────────────────────────────────────────────────────────────────────
 @dataclass
-class QwenPI_v3DefaultConfig:
-    """QwenPI_v3 framework default parameters.
+class QwenOnlyLanguage_v3DefaultConfig:
+    """QwenOnlyLanguage_v3 framework default parameters."""
 
-    See ``starVLA/model/framework/VLM4A/diffusion_model_cfg.md`` for the
-    relationship between vl_hidden_dim, action_dit_hidden_dim and
-    cross_attention_dim.
-    """
-
-    name: str = "QwenPI_v3"
+    name: str = "QwenOnlyLanguage_v3"
 
     # === VLM backbone (Qwen2.5-VL / Qwen3-VL) ===
     qwenvl: dict = field(
@@ -106,9 +91,6 @@ class QwenPI_v3DefaultConfig:
             "action_model_type": "LayerwiseFM",
             "action_dim": 7,
             "state_dim": 7,
-            # Canonical chunk length (number of action steps the head predicts).
-            # Legacy YAMLs may use future_action_window_size = action_horizon - 1;
-            # apply_config_compat normalises both directions.
             "action_horizon": 16,
             "repeated_diffusion_steps": 2,
             "num_inference_timesteps": 4,
@@ -120,9 +102,6 @@ class QwenPI_v3DefaultConfig:
             "noise_s": 0.999,
             "num_timestep_buckets": 1000,
             "diffusion_model_cfg": {
-                # When set (e.g. 1024), DiT internal hidden = action_dit_hidden_dim
-                # and Qwen_PI_v3.project_layers compress VL hidden to this dim.
-                # When None, DiT internal hidden = vl_hidden_dim (== QwenPI behaviour).
                 "action_dit_hidden_dim": 1024,
                 "dropout": 0.2,
                 "final_dropout": True,
@@ -135,22 +114,24 @@ class QwenPI_v3DefaultConfig:
     )
 
 
-@FRAMEWORK_REGISTRY.register("QwenPI_v3")
-class Qwen_PI_v3(baseframework):
+@FRAMEWORK_REGISTRY.register("QwenOnlyLanguage_v3")
+class Qwen_OnlyLanguage_v3(baseframework):
     """
-    Multimodal vision-language-action model (QwenPI_v3 variant).
+    Multimodal vision-language-action model (QwenOnlyLanguage_v3 variant).
 
     Architecture
     ────────────
     - Qwen2.5-VL / Qwen3-VL backbone for fused language / vision token embeddings.
+    - **Only non-vision (language) tokens** are used for action prediction.
     - Per-layer projectors (``project_layers``): one LayerNorm + Linear per VLM
       layer that compresses VLM hidden states from ``vl_hidden_dim`` down to
       ``action_dit_hidden_dim`` before feeding the Action DiT.
     - Layer-wise cross-DiT flow-matching action head that attends to every
       selected VLM layer in parallel.
 
-    Focus: predict a future action chunk conditioned on multi-view images
-    and a natural-language instruction (with optional discretised state prefix).
+    Focus: predict a future action chunk conditioned on a natural-language
+    instruction (with optional discretised state prefix). Vision tokens are
+    explicitly excluded from action updates.
     """
 
     def __init__(
@@ -168,16 +149,10 @@ class Qwen_PI_v3(baseframework):
 
         super().__init__()
         # Merge framework defaults with YAML config (YAML wins on conflicts).
-        self.config = merge_framework_config(QwenPI_v3DefaultConfig, config)
+        self.config = merge_framework_config(QwenOnlyLanguage_v3DefaultConfig, config)
         self.qwen_vl_interface = get_vlm_model(config=self.config)
 
         # Read the actual hidden size and layer count from the loaded VLM.
-        # `output_hidden_states=True` returns (num_hidden_layers + 1) tensors
-        # (embedding output + every layer's output), and we keep the last
-        # `num_hidden_layers` of them for layer-wise cross-attn — so the DiT
-        # depth and project_layers count must match `num_hidden_layers` exactly.
-        # Qwen3-VL stores num_hidden_layers under text_config; Qwen2.5-VL puts it
-        # on the top-level config.  getattr(..., vlm_hf_cfg) handles both cases.
         vlm_hf_cfg = self.qwen_vl_interface.model.config
         text_cfg = getattr(vlm_hf_cfg, "text_config", vlm_hf_cfg)
         num_vl_layers = int(text_cfg.num_hidden_layers)
@@ -185,24 +160,14 @@ class Qwen_PI_v3(baseframework):
         self.config.framework.qwenvl.vl_hidden_dim = llm_hidden_size
         self.config.framework.qwenvl.num_vl_layers = num_vl_layers
 
-        # Resolve the Action DiT hidden dim BEFORE building the action head,
-        # so that LayerwiseFlowmatchingActionHead constructs DiT at the right size.
-        # If the user did not specify it, fall back to the LLM hidden size
-        # (i.e. behave like QwenPI: project_layers becomes nn.Identity()).
-        #
-        # NOTE: `action_dit_hidden_dim` is a framework-side hint only — it is
-        # NOT a DiT constructor kwarg, so we keep it out of diffusion_model_cfg
-        # and instead pass it through `populate_layerwise_dit_cfg`, which writes
-        # the canonical DiT-shape fields (input_embedding_dim, cross_attention_dim,
-        # num_attention_heads).
+        # Resolve the Action DiT hidden dim BEFORE building the action head.
         diffusion_model_cfg = self.config.framework.action_model.diffusion_model_cfg
         action_dit_hidden_dim = diffusion_model_cfg.get("action_dit_hidden_dim", None)
         if action_dit_hidden_dim is None:
             action_dit_hidden_dim = llm_hidden_size
         self.action_dit_hidden_dim = int(action_dit_hidden_dim)
 
-        # Push the resolved DiT shape into diffusion_model_cfg.  The action head
-        # is intentionally agnostic of qwenvl.* — it only consumes this dict.
+        # Push the resolved DiT shape into diffusion_model_cfg.
         populate_layerwise_dit_cfg(
             self.config,
             dit_hidden_dim=self.action_dit_hidden_dim,
@@ -213,7 +178,6 @@ class Qwen_PI_v3(baseframework):
         self.num_action_dit_layers = len(self.action_model.model.transformer_blocks)
 
         # Layer-wise projector: map each selected VL hidden to Action DiT hidden space.
-        # This explicitly decouples VL representation size from action DiT latent size.
         self.project_layers = nn.ModuleList(
             [
                 (
@@ -228,11 +192,47 @@ class Qwen_PI_v3(baseframework):
             ]
         )
 
-        # `action_horizon` is the single source of truth for chunk length.
-        # Legacy aliases (`future_action_window_size`, `past_action_window_size`)
-        # are normalised upstream by `share_tools.apply_config_compat`, so we
-        # only ever read `action_horizon` here.
         self.action_horizon = int(self.config.framework.action_model.action_horizon)
+
+    def _filter_vision_tokens(
+        self,
+        vl_embs_list: List[torch.Tensor],
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor = None,
+    ) -> Tuple[List[torch.Tensor], torch.Tensor]:
+        """Filter out vision tokens, keeping only language tokens.
+
+        Returns:
+            vl_embs_filtered: list of filtered hidden states
+            attention_mask_filtered: filtered attention mask (or None if input mask was None)
+        """
+        # IMAGE_TOKEN_INDEX = 248056 for Qwen3.5-VL
+        input_ids_np = input_ids[0].cpu().numpy() if input_ids.dim() == 2 else input_ids.cpu().numpy()
+        vision_token_mask = input_ids_np == 248056
+        non_vision_indices = np.where(~vision_token_mask)[0]
+
+        vl_embs_filtered = []
+        for layer_hidden in vl_embs_list:
+            if layer_hidden.shape[1] == len(non_vision_indices) + vision_token_mask.sum():
+                # Full sequence, need to filter
+                layer_hidden_filtered = layer_hidden[:, non_vision_indices, :]
+                vl_embs_filtered.append(layer_hidden_filtered)
+            else:
+                # Already filtered
+                vl_embs_filtered.append(layer_hidden)
+
+        # Also filter attention_mask to match the filtered sequence length
+        attention_mask_filtered = None
+        if attention_mask is not None:
+            attn_mask_np = attention_mask.cpu().numpy()
+            if attn_mask_np.ndim == 2 and attn_mask_np.shape[1] == len(non_vision_indices) + vision_token_mask.sum():
+                attention_mask_filtered = torch.from_numpy(attn_mask_np[:, non_vision_indices]).to(
+                    attention_mask.device, dtype=attention_mask.dtype
+                )
+            else:
+                attention_mask_filtered = attention_mask
+
+        return vl_embs_filtered, attention_mask_filtered
 
     def _project_vl_hidden_for_action(self, vl_embs_list: List[torch.Tensor]) -> List[torch.Tensor]:
         """Project layer-wise VL hidden states to the hidden space expected by Action DiT."""
@@ -246,11 +246,13 @@ class Qwen_PI_v3(baseframework):
     def _encode_vl_hidden_states(
         self, batch_images: List, instructions: List[str]
     ) -> tuple:
-        """Run QwenVL, project hidden states, and return (layer-wise embeddings, attention_mask) for the Action DiT."""
+        """Run QwenVL, filter vision tokens, project hidden states, and return (layer-wise embeddings, attention_mask) for the Action DiT."""
         qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(
             images=batch_images, instructions=instructions
         )
         attention_mask = qwen_inputs.get("attention_mask", None)
+        input_ids = qwen_inputs.get("input_ids")
+
         with torch.autocast("cuda", dtype=torch.bfloat16):
             qwenvl_outputs = self.qwen_vl_interface(
                 **qwen_inputs,
@@ -258,9 +260,21 @@ class Qwen_PI_v3(baseframework):
                 output_hidden_states=True,
                 return_dict=True,
             )
-            vl_embs_list = list(qwenvl_outputs.hidden_states[-self.num_action_dit_layers:])
+            all_hidden = list(qwenvl_outputs.hidden_states)
+
+            # Filter out vision tokens - only keep language tokens
+            if input_ids is not None:
+                vl_embs_list, attention_mask_filtered = self._filter_vision_tokens(
+                    all_hidden[-self.num_action_dit_layers:], input_ids, attention_mask
+                )
+            else:
+                vl_embs_list = list(all_hidden[-self.num_action_dit_layers:])
+                attention_mask_filtered = attention_mask
+
+            # Project to action DiT hidden dimension
             vl_embs_list = self._project_vl_hidden_for_action(vl_embs_list)
-        return vl_embs_list, attention_mask
+
+        return vl_embs_list, attention_mask_filtered
 
     def forward(
         self,
@@ -290,21 +304,22 @@ class Qwen_PI_v3(baseframework):
         )
         state = None  # state is now encoded in the instruction tokens
 
-        # Step 1: encode through QwenVL
+        # Step 1: encode through QwenVL (filter vision tokens)
         vl_embs_list, backbone_attention_mask = self._encode_vl_hidden_states(batch_images, instructions)
         base_hidden = vl_embs_list[-1]
+
         # Step 2: compute flow-matching loss over the action chunk
         with torch.autocast("cuda", dtype=torch.float32):
             # Align labels: keep only the last action_horizon timesteps.
             actions = torch.tensor(
                 np.array(actions), device=base_hidden.device, dtype=base_hidden.dtype
             )  # [B, T_full, action_dim]
-            actions_target = actions[:, -self.action_horizon :, :]  # (B, action_horizon, action_dim)
+            actions_target = actions[:, -self.action_horizon:, :]  # (B, action_horizon, action_dim)
 
             repeated_diffusion_steps = (
-                self.config.trainer.get("repeated_diffusion_steps", 16) if self.config and self.config.trainer else 4
+                self.config.trainer.get("repeated_diffusion_steps", 16) if self.config and self.config.trainer else 2
             )
-            
+
             actions_target_repeated = actions_target.repeat(repeated_diffusion_steps, 1, 1)
             # Repeat every VLM layer embedding to match the duplicated action batch.
             vl_embs_list_repeated = [h.repeat(repeated_diffusion_steps, 1, 1) for h in vl_embs_list]
@@ -339,7 +354,7 @@ class Qwen_PI_v3(baseframework):
         Steps:
           1. Optionally resize images to the training observation resolution.
           2. Encode images + instruction (with discretised state prefix) through QwenVL.
-          3. Project layer-wise VLM hidden states to the Action DiT latent space.
+          3. Filter vision tokens, project layer-wise VLM hidden states to the Action DiT latent space.
           4. Run the flow-matching sampler to produce the action chunk.
 
         Args:
@@ -369,7 +384,7 @@ class Qwen_PI_v3(baseframework):
         if train_obs_image_size:
             batch_images = resize_images(batch_images, target_size=train_obs_image_size)
 
-        # Step 1: encode through QwenVL
+        # Step 1: encode through QwenVL (filter vision tokens)
         vl_embs_list, backbone_attention_mask = self._encode_vl_hidden_states(batch_images, instructions)
         base_hidden = vl_embs_list[-1]
         if backbone_attention_mask is not None:
@@ -437,9 +452,7 @@ if __name__ == "__main__":
     # try get model
     cfg.framework.qwenvl.base_vlm = "./playground/Pretrained_models/Qwen3-VL-4B-Instruct"
 
-    model = Qwen_PI_v3(cfg)
-    # ckpt="/mnt/petrelfs/yejinhui/Projects/llavavla/results/Checkpoints/1011_qwenpi/checkpoints/need_steps_10000_pytorch_model.pt"
-    # model = Qwen_PI.from_pretrained(ckpt)
+    model = Qwen_OnlyLanguage_v3(cfg)
     print(model)
 
     def print_model_size(m: nn.Module, depth: int = 1):
@@ -478,32 +491,3 @@ if __name__ == "__main__":
     predict_output = model.predict_action([sample])
     normalized_actions = predict_output["normalized_actions"]
     print(f"Unnormalized Action: {normalized_actions}")
-
-    # # # Advance: try forward model with dataloader
-    # # # can be fake sample， but here get from dataloader for simpler
-    # from starVLA.dataloader.lerobot_datasets import get_vla_dataset, collate_fn
-
-    # vla_dataset_cfg = cfg.datasets.vla_data
-    # vla_dataset_cfg.include_state = True
-
-    # dataset = get_vla_dataset(data_cfg=vla_dataset_cfg)
-
-    # from torch.utils.data import DataLoader
-
-    # train_dataloader = DataLoader(
-    #     dataset,
-    #     batch_size=2,
-    #     num_workers=1,  # For Debug
-    #     collate_fn=collate_fn,
-    # )
-    # #
-    # for batch in tqdm(train_dataloader, desc="Processing Batches"):
-    #     batch
-    #     break
-
-    # # try get model
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # model = model.to(device)
-    # model(batch)
-
-    # action = model.predict_action(batch)

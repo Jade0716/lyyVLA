@@ -52,7 +52,7 @@ from PIL import Image
 from deployment.model_server.tools.image_tools import to_pil_preserve
 from starVLA.model.framework.base_framework import baseframework
 from starVLA.model.framework.share_tools import merge_framework_config, populate_layerwise_dit_cfg
-from starVLA.model.modules.action_model.LayerwiseFM_ActionHeader import LayerwiseFlowmatchingActionHead, get_action_model
+from starVLA.model.modules.action_model.crossself_AcitonHeader import CrossSelfFlowmatchingActionHead, get_action_model
 from starVLA.model.modules.vlm import get_vlm_model
 from starVLA.model.tools import FRAMEWORK_REGISTRY
 from starVLA.training.trainer_utils import initialize_overwatch
@@ -135,8 +135,8 @@ class QwenPI_v3DefaultConfig:
     )
 
 
-@FRAMEWORK_REGISTRY.register("QwenPI_v3")
-class Qwen_PI_v3(baseframework):
+@FRAMEWORK_REGISTRY.register("QwenPI_v3_cs")
+class Qwen_PI_v3_cs(baseframework):
     """
     Multimodal vision-language-action model (QwenPI_v3 variant).
 
@@ -209,7 +209,7 @@ class Qwen_PI_v3(baseframework):
             num_dit_layers=num_vl_layers,
         )
 
-        self.action_model: LayerwiseFlowmatchingActionHead = get_action_model(config=self.config)
+        self.action_model: CrossSelfFlowmatchingActionHead = get_action_model(config=self.config)
         self.num_action_dit_layers = len(self.action_model.model.transformer_blocks)
 
         # Layer-wise projector: map each selected VL hidden to Action DiT hidden space.

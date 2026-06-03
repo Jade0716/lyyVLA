@@ -9,7 +9,7 @@ set -euo pipefail
 # WandB — set your own key, or run `wandb login` before launching,
 # or uncomment the line below to disable WandB entirely:
 #   export WANDB_MODE=disabled
-export WANDB_API_KEY=<your_wandb_api_key>
+# export WANDB_API_KEY=<your_wandb_api_key>
 
 # NCCL networking — uncomment and edit to match your InfiniBand / RoCE setup:
 #   export NCCL_SOCKET_IFNAME=<your_network_interface>   # e.g. eth0, bond0
@@ -29,28 +29,25 @@ if [[ "${CONDA_DEFAULT_ENV:-}" != "starVLA" ]]; then
   conda activate starVLA
 fi
 
-# How many GPUs to use; falls back to "all visible".
-NUM_GPUS=${NUM_GPUS:-$(python -c "import torch;print(torch.cuda.device_count())")}
-
 # ---- training knobs (edit here) ----
-TASK=OpenDrawer
-BATCH=8
-MAX_STEPS=100000
-SAVE_EVERY=10000
-EVAL_EVERY=1000
-LOG_EVERY=100
+TASK=${TASK:-OpenDrawer}
+BATCH=${BATCH:-8}
+MAX_STEPS=${MAX_STEPS:-100000}
+SAVE_EVERY=${SAVE_EVERY:-10000}
+EVAL_EVERY=${EVAL_EVERY:-1000}
+LOG_EVERY=${LOG_EVERY:-100}
 
-run_root_dir=./playground/Checkpoints
-run_id=robocasa365_qwenoft_${TASK}
+run_root_dir=${run_root_dir:-./playground/Checkpoints}
+run_id=${run_id:-robocasa365_qwenoft_${TASK}}
 output_dir=${run_root_dir}/${run_id}
 mkdir -p "${output_dir}"
 cp "$0" "${output_dir}/"
-
+export CUDA_VISIBLE_DEVICES=2
 accelerate launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
-  --num_processes "${NUM_GPUS}" \
+  --num_processes 1 \
   starVLA/training/train_starvla.py \
-  --config_yaml ./examples/Robocasa_365/train_files/starvla_qwenoft_robocasa365.yaml \
+  --config_yaml ./examples/Robocasa_365/train_files/starvla_qwenpi_robocasa365.yaml \
   --datasets.vla_data.per_device_batch_size "${BATCH}" \
   --trainer.max_train_steps "${MAX_STEPS}" \
   --trainer.save_interval "${SAVE_EVERY}" \
@@ -58,4 +55,5 @@ accelerate launch \
   --trainer.eval_interval "${EVAL_EVERY}" \
   --run_root_dir "${run_root_dir}" \
   --run_id "${run_id}" \
-  --wandb_project starVLA_robocasa365
+  --wandb_project starVLA_robocasa365 \
+  --wandb_entity jade0716-hefei-university-of-technology \

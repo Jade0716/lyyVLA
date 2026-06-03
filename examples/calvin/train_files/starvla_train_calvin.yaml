@@ -23,7 +23,6 @@ framework:
     state_dim: 7
     action_horizon: 8 # need merge with future_action_window_size
 
-    repeated_diffusion_steps: 8
     noise_beta_alpha: 1.5
     noise_beta_beta: 1.0
     noise_s: 0.999
@@ -41,18 +40,18 @@ framework:
   reduce_in_full_precision: true
 
 datasets:
-  vlm_data:
-    dataset_py: vlm_datasets
-    dataformat: llava_json
-    dataset_use: sharegpt4v_coco
-    eval_dataset: sharegpt4v_coco
-    data_flatten: false
-    base_interval: 2
-    max_pixels: 307200
-    min_pixels: 784
-    model_max_length: 2048
-    model_type: qwen2.5vl
-    per_device_batch_size: 4
+  # vlm_data:
+  #   dataset_py: vlm_datasets
+  #   dataformat: llava_json
+  #   dataset_use: sharegpt4v_coco
+  #   eval_dataset: sharegpt4v_coco
+  #   data_flatten: false
+  #   base_interval: 2
+  #   max_pixels: 307200
+  #   min_pixels: 784
+  #   model_max_length: 2048
+  #   model_type: qwen2.5vl
+  #   per_device_batch_size: 4
 
   vla_data:
     dataset_py: lerobot_datasets
@@ -66,6 +65,7 @@ datasets:
     video_backend: torchvision_av
 
 trainer:
+  repeated_diffusion_steps: 16
   max_train_steps: 30000
   num_warmup_steps: 5000
   save_interval: 5000

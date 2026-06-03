@@ -24,6 +24,23 @@ if [ -z "$MODEL_PATH" ]; then
 fi
 
 ckpt_path=${MODEL_PATH}
+ckpt_dir=$(dirname "${ckpt_path}")
+ckpt_parent=$(basename "${ckpt_dir}")
+ckpt_base=$(basename "${ckpt_path}")
+ckpt_name="${ckpt_base%.*}"
+if [[ "${ckpt_parent}" == "final_model" || "${ckpt_parent}" == "checkpoints" ]]; then
+  eval_run_dir=$(dirname "${ckpt_dir}")
+else
+  eval_run_dir="${ckpt_dir}"
+fi
+eval_run_id=$(basename "${eval_run_dir}")
+eval_name="${eval_run_id}"
+if [[ "${ckpt_parent}" == "checkpoints" ]]; then
+  eval_name="${eval_run_id}_${ckpt_name}"
+fi
+output_server_dir="${eval_run_dir}/output_server"
+output_eval_dir="${eval_run_dir}/output_eval"
+mkdir -p "${output_server_dir}" "${output_eval_dir}"
 
 # Helper to launch policy servers
 policyserver_pids=()
@@ -35,8 +52,8 @@ start_service() {
   local gpu_id=$1
   local ckpt_path=$2
   local port=$3
-  local server_log_dir="$(dirname "${ckpt_path}")/server_logs"
-  local svc_log="${server_log_dir}/$(basename "${ckpt_path%.*}")_policy_server_${port}.log"
+  local server_log_dir="${output_server_dir}"
+  local svc_log="${server_log_dir}/${eval_name}_policy_server_${port}.log"
   mkdir -p "${server_log_dir}"
 
   # Pre-check the port and free it if already occupied
@@ -128,12 +145,8 @@ for i in "${!ENV_NAMES[@]}"; do
   for ((run_idx=1; run_idx<=TSET_NUM; run_idx++)); do
     gpu_id=${CUDA_DEVICES[$((run_count % NUM_GPUS))]}
     
-    ckpt_dir=$(dirname "${ckpt_path}")
-    ckpt_base=$(basename "${ckpt_path}")
-    ckpt_name="${ckpt_base%.*}"  # strip .pt or .bin suffix
-
     tag="run${run_idx}"
-    task_log="${ckpt_dir}/${ckpt_name}_infer_${env}.log.${tag}"
+    task_log="${output_eval_dir}/${eval_name}_infer_${env}.log.${tag}"
 
     echo "▶️ Launching task [${env}] run#${run_idx} on GPU $gpu_id, log → ${task_log}"
     
@@ -151,6 +164,8 @@ for i in "${!ENV_NAMES[@]}"; do
       --sim-freq 500 \
       --max-episode-steps 120 \
       --env-name "${env}" \
+      --logging-dir "${output_eval_dir}" \
+      --eval-save-name "${eval_name}" \
       --scene-name ${scene_name} \
       --rgb-overlay-path ${rgb_overlay_path} \
       --robot-init-x ${robot_init_x} ${robot_init_x} 1 \
@@ -182,12 +197,8 @@ for i in "${!ENV_NAMES_V2[@]}"; do
   env="${ENV_NAMES_V2[i]}"
   for ((run_idx=1; run_idx<=TSET_NUM; run_idx++)); do
     gpu_id=${CUDA_DEVICES[$(((run_count) % NUM_GPUS))]}  # map to GPU ID in CUDA_VISIBLE_DEVICES
-    ckpt_dir=$(dirname "${ckpt_path}")
-    ckpt_base=$(basename "${ckpt_path}")
-    ckpt_name="${ckpt_base%.*}"
-
     tag="run${run_idx}"
-    task_log="${ckpt_dir}/${ckpt_name}_infer_${env}.log.${tag}"
+    task_log="${output_eval_dir}/${eval_name}_infer_${env}.log.${tag}"
 
     echo "▶️ Launching V2 task [${env}] run#${run_idx} on GPU $gpu_id, log → ${task_log}"
 
@@ -206,6 +217,8 @@ for i in "${!ENV_NAMES_V2[@]}"; do
       --sim-freq 500 \
       --max-episode-steps 120 \
       --env-name "${env}" \
+      --logging-dir "${output_eval_dir}" \
+      --eval-save-name "${eval_name}" \
       --scene-name ${scene_name} \
       --rgb-overlay-path ${rgb_overlay_path} \
       --robot-init-x ${robot_init_x} ${robot_init_x} 1 \
@@ -228,5 +241,4 @@ done
 stop_all_services
 wait
 echo "✅ All evaluations finished"
-
 

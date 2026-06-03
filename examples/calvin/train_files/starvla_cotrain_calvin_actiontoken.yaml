@@ -7,7 +7,7 @@ is_debug: false
 version_id: "0.21"
 
 framework:
-  name: QwenPI_v3_cs
+  name: QwenPI_v3_ActionToken
   qwenvl:
     base_vlm: /16T/liuyuyan/Qwen/Qwen3.5-0.8B
     attn_implementation: flash_attention_2
@@ -22,7 +22,7 @@ framework:
     max_seq_len: 1024
     action_dim: 7
     state_dim: 7
-    action_horizon: 16
+    action_horizon: 8
 
     noise_beta_alpha: 1.5
     noise_beta_beta: 1.0
@@ -57,12 +57,12 @@ datasets:
     dataset_py: lerobot_datasets
     include_state: false
     data_root_dir: /16T/liuyuyan/
-    data_mix: bridge_rt_1 # bridge_rt_1
-    action_type: delta_ee
-    CoT_prompt: "Your task is {instruction}. To identify the key objects for your task. Locate their bounding boxes in [x1,y1,x2,y2] format."
+    data_mix: calvin_abc
+    action_type: delta_qpos
+    CoT_prompt: "Your task is {instruction}.Determine the current sub-goal required to complete the task."
     per_device_batch_size: 16
     load_all_data_for_training: true
-    obs_image_size: [224, 224]
+    # obs_image_size: [224, 224]
     video_backend: torchvision_av
     balance_dataset_weights: true
     balance_trajectory_weights: true

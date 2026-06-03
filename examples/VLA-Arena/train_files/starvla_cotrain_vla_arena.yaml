@@ -24,7 +24,6 @@ framework:
     state_dim: 7
     action_horizon: 8
 
-    repeated_diffusion_steps: 8
     noise_beta_alpha: 1.5
     noise_beta_beta: 1.0
     noise_s: 0.999
@@ -71,6 +70,7 @@ datasets:
 # Trainer
 # ---------------------------------------------------------------------------
 trainer:
+  repeated_diffusion_steps: 8
   max_train_steps: 80000
   num_warmup_steps: 4000
   save_interval: 10000

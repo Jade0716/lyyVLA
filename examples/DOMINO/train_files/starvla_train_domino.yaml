@@ -24,7 +24,6 @@ framework:
     state_dim: 14
     action_horizon: 50
 
-    repeated_diffusion_steps: 8
     noise_beta_alpha: 1.5
     noise_beta_beta: 1.0
     noise_s: 0.999
@@ -73,6 +72,7 @@ datasets:
     video_backend: pyav
 
 trainer:
+  repeated_diffusion_steps: 8
   max_train_steps: 1000000
   num_warmup_steps: 5000
   save_interval: 5000

@@ -11,7 +11,7 @@ export NCCL_TIMEOUT=1000  # timeout set to 1 hour (unit: seconds)
 ###########################################################################################
 # === Please modify the following paths according to your environment ===
 freeze_module_list=''
-config_yaml=./examples/SimplerEnv/train_files/starvla_cotrain_oxe.yaml
+config_yaml=./examples/SimplerEnv/train_files/starvla_cotrain_oxe_action_token.yaml
 data_mix=bridge_rt_1
 
 # === End of environment variable configuration ===
@@ -26,7 +26,7 @@ mkdir -p ${output_dir}
 cp $0 ${output_dir}/
 
 
-export CUDA_VISIBLE_DEVICES=2
+export CUDA_VISIBLE_DEVICES=1
 accelerate launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
   --num_processes 1 \

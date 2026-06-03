@@ -176,18 +176,9 @@ class Qwen_GR00T(baseframework):
 
         state = [example["state"] for example in examples] if "state" in examples[0] else None  # [B, 1, state_dim]
 
-        # Step 1: QWenVL input format
-        qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(images=batch_images, instructions=instructions)
-        backbone_attention_mask = qwen_inputs.get("attention_mask", None)
-        with torch.autocast("cuda", dtype=torch.bfloat16):
-            qwenvl_outputs = self.qwen_vl_interface(
-                **qwen_inputs,
-                output_attentions=False,
-                output_hidden_states=True,
-                return_dict=True,
-            )
-            # last_hidden_state: [B, seq_len, H]
-            last_hidden = qwenvl_outputs.hidden_states[-1]  # [B, L, H]
+        last_hidden, backbone_attention_mask = self._encode_vl_hidden_states(
+            batch_images=batch_images, instructions=instructions
+        )
 
         # Step 4: Action Expert Forward and Loss
         with torch.autocast("cuda", dtype=torch.float32):
@@ -220,6 +211,24 @@ class Qwen_GR00T(baseframework):
 
         return {"action_loss": action_loss}
 
+    def _encode_vl_hidden_states(
+        self,
+        batch_images: List,
+        instructions: List[str],
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(images=batch_images, instructions=instructions)
+        backbone_attention_mask = qwen_inputs.get("attention_mask", None)
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            qwenvl_outputs = self.qwen_vl_interface(
+                **qwen_inputs,
+                output_attentions=False,
+                output_hidden_states=True,
+                return_dict=True,
+            )
+            last_hidden = qwenvl_outputs.hidden_states[-1]  # [B, L, H]
+
+        return last_hidden, backbone_attention_mask
+
     @torch.inference_mode()
     def predict_action(
         self,
@@ -246,21 +255,11 @@ class Qwen_GR00T(baseframework):
         if train_obs_image_size:
             batch_images = resize_images(batch_images, target_size=train_obs_image_size)
 
-        # Step 1: QWenVL input format
-        qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(images=batch_images, instructions=instructions)
-        backbone_attention_mask = qwen_inputs.get("attention_mask", None)
+        last_hidden, backbone_attention_mask = self._encode_vl_hidden_states(
+            batch_images=batch_images, instructions=instructions
+        )
         if backbone_attention_mask is not None:
             backbone_attention_mask = backbone_attention_mask.to(dtype=torch.bool)
-        with torch.autocast("cuda", dtype=torch.bfloat16):
-            qwenvl_outputs = self.qwen_vl_interface(
-                **qwen_inputs,
-                output_attentions=False,
-                output_hidden_states=True,
-                return_dict=True,
-            )
-
-            # last_hidden_state: [B, seq_len, H]
-            last_hidden = qwenvl_outputs.hidden_states[-1]  # [B, L, H]
 
         state = (
             torch.from_numpy(np.array(state)).to(last_hidden.device, dtype=last_hidden.dtype)

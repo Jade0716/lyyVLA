@@ -4,8 +4,8 @@ set -euo pipefail
 STARVLA_DIR="${STARVLA_DIR:-$(cd "$(dirname "$0")/../../.." && pwd)}"
 star_vla_python="${star_vla_python:-python}"
 port="${port:-6678}"
-gpu_id="${gpu_id:-0}"
-your_ckpt="${your_ckpt:-./results/Checkpoints/0418_oxe_bridge_rt_1_QwenGR00T/checkpoints/steps_10000_pytorch_model.pt}"
+gpu_id="${gpu_id:-1}"
+your_ckpt="${your_ckpt:-./results/Checkpoints/oxe_qwen3.5-0.8B_20260525_150212/final_model/pytorch_model.pt}"
 USE_BF16="${USE_BF16:-1}"
 
 cd "${STARVLA_DIR}"

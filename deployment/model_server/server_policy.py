@@ -7,6 +7,8 @@ import logging
 import os
 import socket
 
+from transformers.utils import logging as transformers_logging
+
 from deployment.model_server.policy_wrapper import PolicyServerWrapper
 from deployment.model_server.tools.websocket_policy_server import WebsocketPolicyServer
 
@@ -63,6 +65,8 @@ def start_debugpy_once():
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, force=True)
+    transformers_logging.set_verbosity_error()
+    logging.getLogger("transformers").setLevel(logging.ERROR)
     parser = build_argparser()
     args = parser.parse_args()
     if os.getenv("DEBUG", False):

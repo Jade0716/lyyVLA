@@ -363,6 +363,9 @@ DATASET_NAMED_MIXTURES = {
     "calvin_task_D_D_v3.0": [
         ("calvin_task_D_D_v3.0", 1.0, "libero_franka"),
     ],
+    "calvin_abc": [
+        ("calvin-abc-d-lerobot", 1.0, "libero_franka"),
+    ],
 
     "vla_arena_L0_S": [
         ("VLA_Arena_L0_S_lerobot_openpi", 1.0, "vla_arena_franka"),

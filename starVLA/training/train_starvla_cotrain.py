@@ -355,6 +355,9 @@ class VLAMTrainer(TrainerUtils):
                     "vlm_loss": vlm_loss.item(),
                 }
             )
+            for loss_key in ("motion_dct_loss", "dct_loss"):
+                if loss_key in output_dict:
+                    log_dict[loss_key] = output_dict[loss_key].item()
 
         return log_dict
 

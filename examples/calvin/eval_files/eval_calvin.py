@@ -73,9 +73,9 @@ class Args:
     #################################################################################################################
     # Calvin environment-specific parameters
     #################################################################################################################
-    dataset_path: str = "/path/to/calvin/task_D_D"  # Path to Calvin dataset
-    calvin_config_path: str = "/path/to/calvin/calvin_models/conf"
-    eval_sequences_path: str = "/path/to/calvin/eval_sequences.json"
+    dataset_path: str = "/16T/liuyuyan/calvin_test"  # Path to Calvin dataset
+    calvin_config_path: str = "/home/liuyuyan/calvin/calvin_models/conf"
+    eval_sequences_path: str = "./examples/calvin/eval_files/eval_sequences.json"
     num_sequences: int = 1000  # Number of evaluation sequences
     num_workers: int = 1  # For future multi-process support
     seed: int = 0
@@ -103,19 +103,30 @@ class CalvinPolicyClient:
         unnorm_key: str = "",
     ):
         self.client = ModelClient(
-            policy_ckpt_path=pretrained_path,
             host=host,
             port=port,
-            image_size=[resize_size, resize_size],
             unnorm_key=(unnorm_key or None),
         )
         self.resize_size = resize_size
         self.replan_steps = replan_steps
         self.step_count = 0
+        self.inference_time_total_s = 0.0
+        self.inference_time_count = 0
 
     def reset(self):
         """Reset action plan buffer."""
         self.step_count = 0
+
+    def get_inference_stats(self) -> dict:
+        """Return aggregate timing stats for model server calls."""
+        avg_time_s = (
+            self.inference_time_total_s / self.inference_time_count if self.inference_time_count > 0 else 0.0
+        )
+        return {
+            "avg_model_inference_time_s": avg_time_s,
+            "total_model_inference_time_s": self.inference_time_total_s,
+            "model_inference_time_count": self.inference_time_count,
+        }
 
     def step(self, obs: dict, lang_annotation: str) -> np.ndarray:
         """
@@ -148,7 +159,12 @@ class CalvinPolicyClient:
         }
 
         # Query model
+        inference_start = time.perf_counter()
         model_output = self.client.step(example=example, step=self.step_count)
+        inference_time_s = time.perf_counter() - inference_start
+        self.inference_time_total_s += inference_time_s
+        self.inference_time_count += 1
+
         raw_action = model_output["raw_action"]
         world_vector = np.asarray(raw_action.get("world_vector"), dtype=np.float32).reshape(-1)
         rotation_delta = np.asarray(raw_action.get("rotation_delta"), dtype=np.float32).reshape(-1)
@@ -190,6 +206,31 @@ def load_lang_task(dataset_path: str) -> dict:
     task_oracle = hydra.utils.instantiate(task_cfg)
     val_annotations = OmegaConf.load(conf_dir / "annotations/new_playtable_validation.yaml")
     return val_annotations, task_oracle
+
+
+def save_inference_stats(policy, eval_log_dir: Path, epoch):
+    """Append model inference timing stats to the existing CALVIN results file."""
+    if not hasattr(policy, "get_inference_stats"):
+        return
+
+    stats = policy.get_inference_stats()
+    results_path = eval_log_dir / "results.json"
+    try:
+        with open(results_path, "r") as f:
+            results_data = json.load(f)
+    except FileNotFoundError:
+        results_data = {}
+
+    epoch_key = str(epoch)
+    results_data.setdefault(epoch_key, {}).update(stats)
+    with open(results_path, "w") as f:
+        json.dump(results_data, f)
+
+    print(
+        "Average model inference time: "
+        f"{stats['avg_model_inference_time_s']:.4f}s "
+        f"over {stats['model_inference_time_count']} calls"
+    )
 
 
 def evaluate_policy_ddp(
@@ -283,6 +324,7 @@ def evaluate_policy_ddp(
     eval_sequences = extract_iter_from_tqdm(eval_sequences)
 
     print_and_save(results, eval_sequences, eval_log_dir, epoch)
+    save_inference_stats(policy, eval_log_dir, epoch)
 
     return results
 

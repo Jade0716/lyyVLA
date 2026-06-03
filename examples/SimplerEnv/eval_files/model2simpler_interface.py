@@ -1,4 +1,5 @@
 import os
+import time
 from collections import deque
 from typing import Dict, Optional, Sequence
 
@@ -73,6 +74,8 @@ class ModelClient:
         self.gripper_action_repeat = 0
         self.sticky_gripper_action = 0.0
         self.previous_gripper_action = None
+        self.inference_time_total = 0.0
+        self.inference_time_count = 0
 
         self.task_description = None
         self.image_history = deque(maxlen=self.horizon)
@@ -146,7 +149,11 @@ class ModelClient:
         }
 
         vla_input["unnorm_key"] = self.unnorm_key
+        start_time = time.perf_counter()
         response = self.client.predict_action(vla_input)
+        elapsed_time = time.perf_counter() - start_time
+        self.inference_time_total += elapsed_time
+        self.inference_time_count += 1
 
         # server already un-normalized via training-time transform
         raw_actions = np.array(response["data"]["actions"][0])  # (T, D)
@@ -202,6 +209,18 @@ class ModelClient:
 
         action["terminate_episode"] = np.array([0.0])
         return raw_action, action
+
+    def get_average_inference_time(self) -> float:
+        if self.inference_time_count == 0:
+            return float("nan")
+        return self.inference_time_total / self.inference_time_count
+
+    def get_inference_time_stats(self) -> dict:
+        return {
+            "average_inference_time_sec": self.get_average_inference_time(),
+            "total_inference_time_sec": self.inference_time_total,
+            "num_inference_calls": self.inference_time_count,
+        }
 
     @staticmethod
     def get_action_stats(unnorm_key: str, policy_ckpt_path) -> dict:

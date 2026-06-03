@@ -391,9 +391,13 @@ class VLATrainer(TrainerUtils):
             if self.accelerator.sync_gradients:
                 self.lr_scheduler.step()
 
-        return {
+        log_dict = {
             "action_dit_loss": action_loss.item(),
         }
+        for loss_key in ("motion_dct_loss", "dct_loss"):
+            if loss_key in output_dict:
+                log_dict[loss_key] = output_dict[loss_key].item()
+        return log_dict
 
     def _finalize_training(self):
         """Training end processing."""

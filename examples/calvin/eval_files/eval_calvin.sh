@@ -3,24 +3,23 @@
 ###########################################################################################
 # === Please modify the following paths according to your environment ===
 export PYTHONPATH=$(pwd):${PYTHONPATH} # let Calvin client find websocket tools from main repo
-export calvin_python=/path/to/your/conda/envs/calvin/bin/python
-
+export calvin_python=/home/liuyuyan/miniconda3/envs/calvin_venv/bin/python
+export CUDA_VISIBLE_DEVICES=0
 host="127.0.0.1"
 base_port=5694
-unnorm_key="franka"
-your_ckpt=results/Checkpoints/0123_starvla_qwen3_calvin_task_D_D/checkpoints/steps_30000_pytorch_model.pt
+unnorm_key="franka" #franka
+your_ckpt=results/Checkpoints/calvin_qwen3.5_cs-0.8B_20260601_114252/checkpoints/steps_70000_pytorch_model.pt
 
 folder_name=$(echo "$your_ckpt" | awk -F'/' '{print $(NF-2)"_"$(NF-1)"_"$NF}')
 # === End of environment variable configuration ===
 ###########################################################################################
 
-LOG_DIR="logs/$(date +"%Y%m%d_%H%M%S")"
-mkdir -p ${LOG_DIR}
 
 ${calvin_python} ./examples/calvin/eval_files/eval_calvin.py \
     --args.pretrained-path ${your_ckpt} \
     --args.unnorm-key ${unnorm_key} \
     --args.host "$host" \
     --args.port $base_port \
-    --args.dataset_path /path/to/calvin/task_D_D/ \
+    --args.dataset_path /16T/liuyuyan/calvin_test \
+    --args.eval_log_dir "tmp/calvin/eval_logs/${folder_name}" \
     --args.num_sequences 1000

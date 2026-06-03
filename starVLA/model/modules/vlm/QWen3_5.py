@@ -9,13 +9,7 @@ import torch
 from starVLA.training.trainer_utils import initialize_overwatch
 from transformers import AutoProcessor
 from transformers.modeling_outputs import CausalLMOutputWithPast
-
-try:
-    from transformers import Qwen3_5ForConditionalGeneration
-except ImportError as import_error:
-    raise ImportError(
-        "Qwen3.5 model class is unavailable. Please install transformers >= 5.2.0 or check your transformers version."
-    ) from import_error
+from starVLA.model.modules.vlm.qwen3_5_src.modeling_qwen3_5 import Qwen3_5ForConditionalGeneration
 
 logger = initialize_overwatch(__name__)
 

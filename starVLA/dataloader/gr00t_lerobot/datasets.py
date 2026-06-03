@@ -1201,6 +1201,18 @@ class LeRobotSingleDataset(Dataset):
         for config in self.modality_configs.values():
             for key in config.modality_keys:
                 delta_indices[key] = np.array(config.delta_indices)
+
+        if self.data_cfg is not None and self.data_cfg.get("twochunk_training", False):
+            window_size = int(self.data_cfg.get("twochunk_window_size", 32))
+            vision_stride = int(self.data_cfg.get("twochunk_vision_stride", 4))
+            vision_indices = np.arange(0, window_size, vision_stride)
+            action_indices = np.arange(window_size)
+
+            for key in self.modality_keys.get("video", []):
+                delta_indices[key] = vision_indices
+            for key in self.modality_keys.get("action", []):
+                delta_indices[key] = action_indices
+
         return delta_indices
 
     def _init_action_mode(self) -> None:
@@ -1396,6 +1408,18 @@ class LeRobotSingleDataset(Dataset):
             "lang": language,
             "robot_tag": self.tag
         }
+
+        if self.data_cfg is not None and self.data_cfg.get("twochunk_training", False):
+            image_sequence = []
+            num_frames = len(data[self.modality_keys["video"][0]])
+            for frame_i in range(num_frames):
+                frame_views = []
+                for video_key in self.modality_keys["video"]:
+                    image = data[video_key][frame_i]
+                    image = Image.fromarray(image).resize((224, 224))
+                    frame_views.append(image)
+                image_sequence.append(frame_views)
+            sample["image_sequence"] = image_sequence
 
         if self.data_cfg is not None and self.data_cfg.get("include_state", False) not in ["False", False]:
             state = []

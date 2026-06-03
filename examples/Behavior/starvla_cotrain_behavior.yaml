@@ -25,7 +25,6 @@ framework:
     future_action_window_size: 49
     action_horizon: 50
 
-    repeated_diffusion_steps: 8
     noise_beta_alpha: 1.5
     noise_beta_beta: 1.0
     noise_s: 0.999
@@ -66,6 +65,7 @@ datasets:
     CoT_prompt: "Your task is {instruction}. To identify the key objects for your task. Locate their bounding boxes in [x1,y1,x2,y2] format."
 
 trainer:
+  repeated_diffusion_steps: 8
   max_train_steps: 100000
   num_warmup_steps: 5000
   save_interval: 5000
@@ -83,7 +83,7 @@ trainer:
     vlm: 0.1
   # pretrained_checkpoint: /gpfs/wangzixuan/Jinhui/llavavla0/playground/Checkpoints/1031_BEHAVIOR_challenge_qwengroot/checkpoints/steps_5000_pytorch_model.pt
   # reload_modules: 'action_model,layer_qformer' # warning: this may cause model to not converge
-  # repeated_diffusion_steps moved to framework.action_model.repeated_diffusion_steps
+  # repeated_diffusion_steps is configured in trainer.repeated_diffusion_steps
   max_grad_norm: 1.0
   weight_decay: 0.0
   logging_frequency: 10

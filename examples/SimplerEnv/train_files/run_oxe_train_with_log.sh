@@ -12,7 +12,7 @@
 # export NCCL_TIMEOUT=1000
 
 run_root_dir=./results/Checkpoints
-run_id=oxe_qwen3.5-0.8B_$(date +%Y%m%d_%H%M%S)
+run_id=oxe_qwen3.5actiontoken-0.8B_$(date +%Y%m%d_%H%M%S)
 export run_root_dir
 export run_id
 # === End ===

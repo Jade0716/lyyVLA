@@ -379,9 +379,12 @@ class VLATrainer(TrainerUtils):
         """Execute single training step."""
         with self.accelerator.accumulate(self.model):
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                output_dict = self.model.forward(batch_vla)
-                action_loss = output_dict["action_loss"]
-                total_loss = action_loss
+                output_dict = self.model.forward(
+                    batch_vla,
+                    train_step=self.completed_steps,
+                    max_train_steps=self.config.trainer.max_train_steps,
+                )
+                total_loss = output_dict["action_loss"]
 
             self.accelerator.backward(total_loss)
 
@@ -399,11 +402,18 @@ class VLATrainer(TrainerUtils):
             self.optimizer.zero_grad()
 
         log_dict = {
-            "action_dit_loss": action_loss.item(),
+            "action_loss": total_loss.item(),
         }
-        for loss_key in ("motion_dct_loss", "dct_loss"):
+        for loss_key in (
+            "action_dit_loss",
+            "action_dit_loss_weight",
+            "motion_dct_loss",
+            "weighted_motion_dct_loss",
+            "dct_loss",
+        ):
             if loss_key in output_dict:
-                log_dict[loss_key] = output_dict[loss_key].item()
+                loss_value = output_dict[loss_key]
+                log_dict[loss_key] = loss_value.item() if hasattr(loss_value, "item") else loss_value
         return log_dict
 
     def _finalize_training(self):

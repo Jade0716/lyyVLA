@@ -4,11 +4,11 @@
 # === Please modify the following paths according to your environment ===
 export PYTHONPATH=$(pwd):${PYTHONPATH} # let Calvin client find websocket tools from main repo
 export calvin_python=/home/liuyuyan/miniconda3/envs/calvin_venv/bin/python
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1
 host="127.0.0.1"
 base_port=5694
 unnorm_key="franka" #franka
-your_ckpt=results/Checkpoints/calvin_qwen3.5_cs-0.8B_20260601_114252/checkpoints/steps_70000_pytorch_model.pt
+your_ckpt=results/Checkpoints/calvin_qwen3.5_gr00t-0.8B_20260602_153154/final_model/pytorch_model.pt
 
 folder_name=$(echo "$your_ckpt" | awk -F'/' '{print $(NF-2)"_"$(NF-1)"_"$NF}')
 # === End of environment variable configuration ===

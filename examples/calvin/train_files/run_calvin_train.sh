@@ -1,6 +1,3 @@
-# export CUDA_VISIBLE_DEVICES=0
-export CUDA_VISIBLE_DEVICES=0
-
 # export NCCL_SOCKET_IFNAME=bond0
 # export NCCL_IB_HCA=mlx5_2,mlx5_3
 
@@ -13,7 +10,7 @@ export CUDA_VISIBLE_DEVICES=0
 # === Please modify the following paths according to your environment ===
 
 freeze_module_list=''
-config_yaml=./examples/calvin/train_files/starvla_cotrain_calvin.yaml
+config_yaml=./examples/calvin/train_files/starvla_cotrain_calvin_actiontoken_2chunk.yaml
 
 # export action_input_dim=2048
 # === End of environment variable configuration ===
@@ -27,14 +24,17 @@ mkdir -p ${output_dir}
 # mv this script to the output dir
 cp $0 ${output_dir}/
 
-accelerate launch \
+CPU_CORES=${CPU_CORES:-0-31}
+export CUDA_VISIBLE_DEVICES=1
+taskset -c "${CPU_CORES}" accelerate launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
   --num_processes 1 \
+  --main_process_port 29500 \
   starVLA/training/train_starvla.py \
   --config_yaml ${config_yaml} \
   --trainer.vla_data.video_backend torchvision_av \
   --trainer.freeze_modules ${freeze_module_list} \
-  --trainer.max_train_steps 70000 \
+  --trainer.max_train_steps 100000 \
   --trainer.save_interval 10000 \
   --trainer.logging_frequency 100 \
   --trainer.eval_interval 100 \

@@ -15,6 +15,7 @@ ensembling, gripper sticky logic, and chunk-cache scheduling.
 """
 
 from collections import deque
+import time
 from typing import Optional, Sequence
 
 import matplotlib.pyplot as plt
@@ -78,6 +79,8 @@ class ModelClient:
 
         # Cached unnormalized chunk; refreshed every `action_chunk_size` steps.
         self.raw_actions: Optional[np.ndarray] = None
+        self.predict_action_time_total_s = 0.0
+        self.predict_action_time_count = 0
 
     def _add_image_to_history(self, image: np.ndarray) -> None:
         self.image_history.append(image)
@@ -94,6 +97,22 @@ class ModelClient:
         self.sticky_gripper_action = 0.0
         self.previous_gripper_action = None
         self.raw_actions = None
+
+    def get_inference_stats(self) -> dict:
+        avg_time_s = (
+            self.predict_action_time_total_s / self.predict_action_time_count
+            if self.predict_action_time_count > 0
+            else 0.0
+        )
+        return {
+            "avg_model_inference_time_s": avg_time_s,
+            "total_model_inference_time_s": self.predict_action_time_total_s,
+            "model_inference_time_count": self.predict_action_time_count,
+            "avg_predict_action_chunk_time_s": avg_time_s,
+            "total_predict_action_chunk_time_s": self.predict_action_time_total_s,
+            "predict_action_chunk_count": self.predict_action_time_count,
+            "action_chunk_size": self.action_chunk_size,
+        }
 
     def step(self, example: dict, step: int = 0, **kwargs) -> dict:
         """One env step.
@@ -118,7 +137,11 @@ class ModelClient:
                 "use_ddim": self.use_ddim,
                 "num_ddim_steps": self.num_ddim_steps,
             }
+            inference_start = time.perf_counter()
             response = self.client.predict_action(vla_input)
+            inference_time_s = time.perf_counter() - inference_start
+            self.predict_action_time_total_s += inference_time_s
+            self.predict_action_time_count += 1
             try:
                 actions_batch = response["data"]["actions"]  # (B, T, D), unnormalized server-side
             except KeyError:

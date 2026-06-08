@@ -12,7 +12,7 @@
 # export NCCL_TIMEOUT=1000
 
 run_root_dir=./results/Checkpoints
-run_id=calvin_qwen3.5_gr00t-0.8B_$(date +%Y%m%d_%H%M%S)
+run_id=calvin_gr00t_action2chunk-0.8B_$(date +%Y%m%d_%H%M%S)
 export run_root_dir
 export run_id
 # === End ===

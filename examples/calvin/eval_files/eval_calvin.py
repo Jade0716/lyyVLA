@@ -110,23 +110,16 @@ class CalvinPolicyClient:
         self.resize_size = resize_size
         self.replan_steps = replan_steps
         self.step_count = 0
-        self.inference_time_total_s = 0.0
-        self.inference_time_count = 0
 
     def reset(self):
         """Reset action plan buffer."""
         self.step_count = 0
 
     def get_inference_stats(self) -> dict:
-        """Return aggregate timing stats for model server calls."""
-        avg_time_s = (
-            self.inference_time_total_s / self.inference_time_count if self.inference_time_count > 0 else 0.0
-        )
-        return {
-            "avg_model_inference_time_s": avg_time_s,
-            "total_model_inference_time_s": self.inference_time_total_s,
-            "model_inference_time_count": self.inference_time_count,
-        }
+        """Return timing stats for actual predict_action chunk requests."""
+        if hasattr(self.client, "get_inference_stats"):
+            return self.client.get_inference_stats()
+        return {}
 
     def step(self, obs: dict, lang_annotation: str) -> np.ndarray:
         """
@@ -158,12 +151,8 @@ class CalvinPolicyClient:
             "lang": lang_annotation,
         }
 
-        # Query model
-        inference_start = time.perf_counter()
+        # Query model client. Timing is recorded inside the predict_action chunk refresh path.
         model_output = self.client.step(example=example, step=self.step_count)
-        inference_time_s = time.perf_counter() - inference_start
-        self.inference_time_total_s += inference_time_s
-        self.inference_time_count += 1
 
         raw_action = model_output["raw_action"]
         world_vector = np.asarray(raw_action.get("world_vector"), dtype=np.float32).reshape(-1)
@@ -214,6 +203,8 @@ def save_inference_stats(policy, eval_log_dir: Path, epoch):
         return
 
     stats = policy.get_inference_stats()
+    if not stats:
+        return
     results_path = eval_log_dir / "results.json"
     try:
         with open(results_path, "r") as f:
@@ -227,9 +218,9 @@ def save_inference_stats(policy, eval_log_dir: Path, epoch):
         json.dump(results_data, f)
 
     print(
-        "Average model inference time: "
+        "Average predict_action chunk time: "
         f"{stats['avg_model_inference_time_s']:.4f}s "
-        f"over {stats['model_inference_time_count']} calls"
+        f"over {stats['model_inference_time_count']} chunk calls"
     )
 
 

@@ -93,8 +93,6 @@ class QwenGR00TDefaultConfig:
             # Legacy YAMLs may use future_action_window_size = action_horizon - 1;
             # apply_config_compat normalises both directions.
             "action_horizon": 8,
-            # Repeat factor for flow-matching loss (more noise samples per batch)
-            "repeated_diffusion_steps": 8,
             # Beta distribution params for noise schedule
             "noise_beta_alpha": 1.5,
             "noise_beta_beta": 1.0,
@@ -187,11 +185,9 @@ class Qwen_GR00T(baseframework):
             )  # [B, T_full, action_dim]
             actions_target = actions[:, -self.action_horizon :, :]  # (B, action_horizon, action_dim)
 
-            repeated_diffusion_steps = (
-                self.config.framework.action_model.get("repeated_diffusion_steps", 4)
-                if self.config and hasattr(self.config, "framework")
-                else 4
-            )
+        if self.config and hasattr(self.config, "trainer"):
+            repeated_diffusion_steps = int(self.config.trainer.get("repeated_diffusion_steps", 16))
+
             actions_target_repeated = actions_target.repeat(repeated_diffusion_steps, 1, 1)
             last_hidden_repeated = last_hidden.repeat(repeated_diffusion_steps, 1, 1)
             if backbone_attention_mask is not None:

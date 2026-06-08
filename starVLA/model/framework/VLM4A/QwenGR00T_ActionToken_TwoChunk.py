@@ -1,3 +1,4 @@
+import time
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -203,6 +204,16 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
             big_chunk_images.append(images)
         return big_chunk_images
 
+    @staticmethod
+    def _first_refresh_images(image_sequences: List[List]) -> List[List]:
+        return [image_sequence[0] for image_sequence in image_sequences]
+
+    @staticmethod
+    def _to_pil_nested(images):
+        if isinstance(images, list):
+            return [Qwen_GR00T_ActionToken_TwoChunk._to_pil_nested(image) for image in images]
+        return to_pil_preserve(images)
+
     def _valid_training_refreshes(self, image_sequences: List[List], actions: torch.Tensor) -> int:
         max_refreshes = max(1, self.twochunk_window_size // max(self.vision_refresh_steps, 1))
         num_refreshes = min(min(len(seq) for seq in image_sequences), max_refreshes)
@@ -239,11 +250,11 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
                 f"vision_refresh_steps={self.vision_refresh_steps}"
             )
 
-        big_chunk_images = self._flatten_big_chunk_images(image_sequences, num_refreshes)
-        action_token_hidden = self._encode_action_token_hidden(big_chunk_images, instructions)
+        first_frame_images = self._first_refresh_images(image_sequences)
+        action_token_hidden = self._encode_action_token_hidden(first_frame_images, instructions)
 
-        # Auxiliary low-frequency supervision: the slow action token predicts
-        # the first DCT coefficients of the whole 32-step motion chunk.
+        # Auxiliary low-frequency supervision: the first-frame slow action token
+        # predicts the low-frequency trend of the whole twochunk motion window.
         motion_chunk_len = min(num_refreshes * self.vision_refresh_steps, actions.shape[1])
         low_dct_gt = self._motion_dct_target(actions, motion_chunk_len).to(
             device=action_token_hidden.device,
@@ -269,11 +280,8 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         )
         actions_target = torch.cat(action_chunks, dim=0).to(device=encoder_hidden.device, dtype=encoder_hidden.dtype)
 
-        repeated_diffusion_steps = (
-            self.config.framework.action_model.get("repeated_diffusion_steps", 4)
-            if self.config and hasattr(self.config, "framework")
-            else 4
-        )
+        if self.config and hasattr(self.config, "trainer"):
+            repeated_diffusion_steps = int(self.config.trainer.get("repeated_diffusion_steps", 16))
 
         with torch.autocast("cuda", dtype=torch.float32):
             action_loss = self.action_model(
@@ -301,6 +309,17 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         steps_since_refresh = self._predict_call_count * max(int(self.action_horizon), 1)
         return steps_since_refresh % self.language_refresh_steps == 0
 
+    def _reset_predict_cache(self) -> None:
+        self._cached_action_token_hidden = None
+        self._cached_instruction_key = None
+        self._cached_batch_size = None
+        self._predict_call_count = 0
+
+    @staticmethod
+    def _sync_cuda_if_needed() -> None:
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
     @torch.inference_mode()
     def predict_action(
         self,
@@ -310,6 +329,9 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         if type(examples) is not list:
             examples = [examples]
 
+        if examples and "image_sequence" in examples[0]:
+            return self._predict_action_window(examples, **kwargs)
+
         batch_images = [to_pil_preserve(example["image"]) for example in examples]
         instructions = [example["lang"] for example in examples]
 
@@ -318,12 +340,25 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
             batch_images = resize_images(batch_images, target_size=train_obs_image_size)
 
         batch_size = len(examples)
-        if self._should_refresh_action_token(instructions, batch_size):
+        debug_twochunk = bool(kwargs.get("debug_twochunk", False))
+        reset_cache = bool(kwargs.get("reset_cache", False))
+        if reset_cache:
+            self._reset_predict_cache()
+
+        slow_refresh = self._should_refresh_action_token(instructions, batch_size)
+        slow_time_s = 0.0
+        if slow_refresh:
+            self._sync_cuda_if_needed()
+            slow_start = time.perf_counter()
             self._cached_action_token_hidden = self._encode_action_token_hidden(batch_images, instructions).detach()
+            self._sync_cuda_if_needed()
+            slow_time_s = time.perf_counter() - slow_start
             self._cached_instruction_key = tuple(instructions)
             self._cached_batch_size = batch_size
             self._predict_call_count = 0
 
+        self._sync_cuda_if_needed()
+        fast_start = time.perf_counter()
         encoder_hidden, encoder_attention_mask = self._build_action_condition(
             self._cached_action_token_hidden,
             batch_images,
@@ -335,7 +370,81 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
                 None,
                 encoder_attention_mask=encoder_attention_mask.to(dtype=torch.bool),
             )
+        self._sync_cuda_if_needed()
+        fast_time_s = time.perf_counter() - fast_start
 
         self._predict_call_count += 1
+        if debug_twochunk:
+            hidden_mode = "new_slow_action_hidden" if slow_refresh else "reuse_slow_action_hidden"
+            print(
+                "[TwoChunkFramework] "
+                f"{hidden_mode}; reset_cache={reset_cache}; "
+                f"fast_refresh_every={self.action_horizon} env steps; "
+                f"slow_refresh_every={self.language_refresh_steps} env steps; "
+                f"predict_call_count={self._predict_call_count}; "
+                f"slow_time={slow_time_s:.4f}s; "
+                f"fast_time={fast_time_s:.4f}s; "
+                f"encoder_hidden_shape={tuple(encoder_hidden.shape)}; "
+                f"action_shape={tuple(pred_actions.shape)}"
+            )
+        normalized_actions = pred_actions.detach().cpu().numpy()
+        return {"normalized_actions": normalized_actions}
+
+    def _valid_prediction_refreshes(self, image_sequences: List[List], examples: List[dict]) -> int:
+        max_refreshes = max(1, self.twochunk_window_size // max(self.vision_refresh_steps, 1))
+        num_refreshes = min(min(len(seq) for seq in image_sequences), max_refreshes)
+        if examples and "action" in examples[0]:
+            action_len = min(np.asarray(example["action"]).shape[0] for example in examples)
+            while num_refreshes > 0:
+                end = (num_refreshes - 1) * self.vision_refresh_steps + self.action_horizon
+                if end <= action_len:
+                    return num_refreshes
+                num_refreshes -= 1
+            return 0
+        return num_refreshes
+
+    @torch.inference_mode()
+    def _predict_action_window(
+        self,
+        examples: List[dict],
+        **kwargs: str,
+    ):
+        image_sequences = [self._to_pil_nested(example["image_sequence"]) for example in examples]
+        instructions = [example["lang"] for example in examples]
+
+        train_obs_image_size = getattr(self.config.datasets.vla_data, "obs_image_size", None)
+        if train_obs_image_size:
+            image_sequences = resize_images(image_sequences, target_size=train_obs_image_size)
+
+        num_refreshes = self._valid_prediction_refreshes(image_sequences, examples)
+        if num_refreshes == 0:
+            raise ValueError(
+                "TwoChunk predict_action received no valid action windows. "
+                f"action_horizon={self.action_horizon}, vision_refresh_steps={self.vision_refresh_steps}"
+            )
+
+        first_frame_images = self._first_refresh_images(image_sequences)
+        action_token_hidden = self._encode_action_token_hidden(first_frame_images, instructions)
+
+        flat_frame_images = []
+        for refresh_i in range(num_refreshes):
+            flat_frame_images.extend([image_sequence[refresh_i] for image_sequence in image_sequences])
+
+        flat_action_token_hidden = action_token_hidden.repeat(num_refreshes, 1, 1)
+        encoder_hidden, encoder_attention_mask = self._build_action_condition(
+            flat_action_token_hidden,
+            flat_frame_images,
+        )
+
+        with torch.autocast("cuda", dtype=torch.float32):
+            pred_actions = self.action_model.predict_action(
+                encoder_hidden,
+                None,
+                encoder_attention_mask=encoder_attention_mask.to(dtype=torch.bool),
+            )
+
+        batch_size = len(examples)
+        pred_actions = pred_actions.view(num_refreshes, batch_size, self.action_horizon, -1)
+        pred_actions = pred_actions.permute(1, 0, 2, 3).reshape(batch_size, num_refreshes * self.action_horizon, -1)
         normalized_actions = pred_actions.detach().cpu().numpy()
         return {"normalized_actions": normalized_actions}

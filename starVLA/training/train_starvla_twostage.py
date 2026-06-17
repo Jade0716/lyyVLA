@@ -31,6 +31,7 @@ from starVLA.training.train_starvla import (
     prepare_data,
     setup_directories,
     setup_optimizer_and_scheduler,
+    sync_twochunk_data_config,
 )
 from starVLA.training.trainer_utils.config_tracker import AccessTrackedConfig, wrap_config
 from starVLA.training.trainer_utils.trainer_tools import normalize_dotlist_args
@@ -134,6 +135,7 @@ class TwoStageVLATrainer(VLATrainer):
 def main(cfg) -> None:
     logger.info("Two-stage VLA Training :: Warming Up")
 
+    cfg = sync_twochunk_data_config(cfg)
     cfg = wrap_config(cfg)
     logger.info("✅ Configuration wrapped for access tracking")
 

@@ -471,7 +471,7 @@ class Libero4in1DataConfig:
 
     observation_indices = [0]
     action_indices = list(range(8))
-    state_indices = list(range(-16, 0))
+    state_indices = [0]
 
     def modality_config(self):
         video_modality = ModalityConfig(
@@ -1094,4 +1094,3 @@ ROBOT_TYPE_CONFIG_MAP = {
 
     "custom_robot_config": SingleFrankaRobotiqDeltaEefDataConfig(),
 }
-

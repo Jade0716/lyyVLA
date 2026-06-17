@@ -154,6 +154,7 @@ class Qwen_Adapter(baseframework):
         self.phase = self.config.framework.action_model.get("phase", "Training")
         self.qwen_vl_interface = get_vlm_model(config=self.config)
         self.config.framework.qwenvl.vl_hidden_dim = self.qwen_vl_interface.model.config.hidden_size
+        self.config.framework.action_model.hidden_dim = self.qwen_vl_interface.model.config.hidden_size
         self.action_query_num = self.config.framework.action_model.get("action_query_num", 64)
         self.action_model: VLA_Adapter_L1RegressionActionHead = get_action_model(config=self.config)
         self.action_query = nn.Parameter(

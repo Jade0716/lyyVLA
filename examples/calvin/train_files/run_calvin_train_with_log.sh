@@ -11,8 +11,9 @@
 # export NCCL_ASYNC_ERROR_HANDLING=1
 # export NCCL_TIMEOUT=1000
 
-run_root_dir=./results/Checkpoints
-run_id=calvin_gr00t_action2chunk-0.8B_$(date +%Y%m%d_%H%M%S)
+run_root_dir=/16T/liuyuyan/lyyvla/results/Checkpoints
+run_id=calvin_gr00t_4actiontoken_dct_state-0.8B_$(date +%Y%m%d_%H%M%S)
+# run_id=calvin_adapter-0.8B_$(date +%Y%m%d_%H%M%S)
 export run_root_dir
 export run_id
 # === End ===

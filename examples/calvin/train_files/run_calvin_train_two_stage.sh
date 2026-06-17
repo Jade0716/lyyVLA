@@ -11,6 +11,7 @@
 
 freeze_module_list=''
 config_yaml=./examples/calvin/train_files/starvla_cotrain_calvin.yaml
+pretrained_checkpoint="${pretrained_checkpoint:-}"
 
 # export action_input_dim=2048
 # === End of environment variable configuration ===
@@ -24,25 +25,25 @@ mkdir -p ${output_dir}
 # mv this script to the output dir
 cp $0 ${output_dir}/
 
-export CUDA_VISIBLE_DEVICES=0
-
+export CUDA_VISIBLE_DEVICES=1
 accelerate launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
   --num_processes 1 \
-  --main_process_port 29501 \
-  starVLA/training/train_starvla.py \
+  --main_process_port 29500 \
+  starVLA/training/train_starvla_twostage.py \
   --config_yaml "${config_yaml}" \
   --trainer.warmup true \
   --trainer.freeze_modules "${freeze_module_list}" \
-  --trainer.max_train_steps 70000 \
+  --trainer.stage 1 \
+  --trainer.max_train_steps 100000 \
   --trainer.save_interval 10000 \
   --trainer.logging_frequency 100 \
   --trainer.eval_interval 100 \
   --run_root_dir "${run_root_dir}" \
   --run_id "${run_id}" \
   --wandb_project starVLA_Calvin \
-  --wandb_entity jade0716-hefei-university-of-technology
-
+  --wandb_entity jade0716-hefei-university-of-technology \
+  --trainer.pretrained_checkpoint "${pretrained_checkpoint}"
 
 
 ##### Multi-Server Multi-GPU training script #####

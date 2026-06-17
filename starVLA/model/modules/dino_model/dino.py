@@ -10,6 +10,7 @@ Features:
 
 import os
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import torch
 from torch import nn
@@ -21,6 +22,28 @@ def apply_transform(view, transform):
 
 
 # from llavavla.model.modules.dino_model.dino_transforms import make_classification_train_transform
+
+
+def _get_torch_home() -> Path:
+    return Path(os.environ.get("TORCH_HOME", "~/.cache/torch")).expanduser()
+
+
+def _get_local_dino_paths(backbone_name: str):
+    torch_home = _get_torch_home()
+    code_path = torch_home / "hub" / "facebookresearch_dinov2_main"
+    weights_path = torch_home / "hub" / "checkpoints" / f"{backbone_name}_pretrain.pth"
+    return code_path, weights_path
+
+
+def _load_local_dino(backbone_name: str):
+    code_path, weights_path = _get_local_dino_paths(backbone_name)
+    if not code_path.exists() or not weights_path.exists():
+        return None
+
+    body = torch.hub.load(str(code_path), backbone_name, source="local", pretrained=False)
+    state_dict = torch.load(str(weights_path), map_location="cpu")
+    body.load_state_dict(state_dict)
+    return body
 
 
 class DINOv2BackBone(nn.Module):
@@ -39,22 +62,20 @@ class DINOv2BackBone(nn.Module):
 
     def __init__(self, backone_name="dinov2_vits14", output_channels=1024) -> None:
         super().__init__()
-        try:
-            self.body = torch.hub.load("facebookresearch/dinov2", backone_name)
-        except:
-            import traceback
+        self.body = _load_local_dino(backone_name)
+        if self.body is None:
+            try:
+                self.body = torch.hub.load("facebookresearch/dinov2", backone_name)
+            except Exception:
+                import traceback
 
-            traceback.print_exc()
-            print("Failed to load dinov2 from torch hub, loading from local")
-            TORCH_HOME = os.environ.get("TORCH_HOME", "~/.cache/torch/")
-            weights_path = os.path.expanduser(f"{TORCH_HOME}/hub/checkpoints/{backone_name}_pretrain.pth")
-
-            code_path = os.path.expanduser(f"{TORCH_HOME}/hub/facebookresearch_dinov2_main")
-
-            self.body = torch.hub.load(code_path, backone_name, source="local", pretrained=False)
-
-            state_dict = torch.load(weights_path)
-            self.body.load_state_dict(state_dict)
+                traceback.print_exc()
+                code_path, weights_path = _get_local_dino_paths(backone_name)
+                raise FileNotFoundError(
+                    "Failed to load DINOv2 from torch hub and local files are missing. "
+                    "Run examples/calvin/train_files/download_dinov2.sh first, or place files at: "
+                    f"code={code_path}, weights={weights_path}"
+                )
         if backone_name == "dinov2_vits14":
             self.num_channels = 384
         elif backone_name == "dinov2_vitb14":

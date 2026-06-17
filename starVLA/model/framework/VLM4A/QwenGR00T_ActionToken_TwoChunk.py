@@ -4,32 +4,15 @@ from typing import List, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from scipy.fft import dct
 
 from deployment.model_server.tools.image_tools import to_pil_preserve
-from starVLA.model.framework.VLM4A.QwenGR00T_ActionToken import Qwen_GR00T_ActionToken
+from starVLA.model.framework.VLM4A.QwenGR00T_ActionToken import (
+    Qwen_GR00T_ActionToken,
+    _as_bool,
+)
+from starVLA.model.modules.action_model.MLP_ActionHeader import L1RegressionActionHead
 from starVLA.model.tools import FRAMEWORK_REGISTRY
 from starVLA.training.trainer_utils.trainer_tools import resize_images
-
-
-class MotionDCTHead(nn.Module):
-    def __init__(self, hidden_size=1024, keep_freq=8, action_dim=7):
-        super().__init__()
-        self.keep_freq = keep_freq
-        self.action_dim = action_dim
-        self.net = nn.Sequential(
-            nn.LayerNorm(hidden_size),
-            nn.Linear(hidden_size, hidden_size),
-            nn.SiLU(),
-            nn.Linear(hidden_size, keep_freq * action_dim),
-        )
-
-    def forward(self, h_motion):
-        if h_motion.dim() == 3:
-            h_motion = h_motion[:, 0]
-        out = self.net(h_motion)
-        return out.view(-1, self.keep_freq, self.action_dim)
 
 
 @FRAMEWORK_REGISTRY.register("QwenGR00T_ActionToken_TwoChunk")
@@ -37,10 +20,10 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
     """
     Two-chunk GR00T ActionToken variant.
 
-    A slow Qwen pass appends the learnable action query and returns only that
-    query hidden state. Fast action refreshes bypass the Qwen language model:
+    A slow Qwen pass appends learnable motion queries and returns only those
+    query hidden states. Fast action refreshes bypass the Qwen language model:
     they extract pre-LLM image embeddings from Qwen inputs, concatenate those
-    image tokens with the cached action-query hidden state, and condition the
+    image tokens with the cached action-query hidden states, and condition the
     GR00T DiT on that sequence.
     """
 
@@ -48,25 +31,29 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         super().__init__(config=config, **kwargs)
 
         qwenvl_cfg = self.config.framework.get("qwenvl", {})
-        self.language_refresh_steps = int(qwenvl_cfg.get("language_refresh_steps", 32))
+        self.language_refresh_steps = int(qwenvl_cfg.get("language_refresh_steps", 16))
         self.vision_refresh_steps = int(qwenvl_cfg.get("vision_refresh_steps", self.action_horizon))
+        self.fast_chunk_size = self.vision_refresh_steps
         self.twochunk_window_size = int(qwenvl_cfg.get("twochunk_window_size", self.language_refresh_steps))
-        self.motion_dct_keep_freq = int(qwenvl_cfg.get("motion_dct_keep_freq", 8))
+        self.motion_dct_keep_freq = int(qwenvl_cfg.get("motion_dct_keep_freq", 4))
+        self.motion_dct_chunk_len = int(qwenvl_cfg.get("motion_dct_chunk_len", self.language_refresh_steps))
+        self.use_motion_dct_loss = _as_bool(qwenvl_cfg.get("use_motion_dct_loss", True))
         self.motion_dct_loss_weight = float(qwenvl_cfg.get("motion_dct_loss_weight", 1.0))
+        self.action_model.action_horizon = self.fast_chunk_size
+        if hasattr(self.action_model, "config"):
+            self.action_model.config.action_horizon = self.fast_chunk_size
 
         hidden_size = int(self.qwen_vl_interface.model.config.hidden_size)
         action_dim = int(self.config.framework.action_model.action_dim)
-        self.motion_dct_head = MotionDCTHead(
-            hidden_size=hidden_size,
-            keep_freq=self.motion_dct_keep_freq,
-            action_dim=action_dim,
-        )
-
-        if self.action_horizon != self.vision_refresh_steps:
-            print(
-                "[QwenGR00T_ActionToken_TwoChunk] action_horizon controls the predicted action chunk size. "
-                f"Got action_horizon={self.action_horizon}, vision_refresh_steps={self.vision_refresh_steps}. "
-                "Set them equal for a clean fast-refresh cadence."
+        self.motion_dct_action_dim = max(action_dim - 1, 1)
+        self.action_query_token = nn.Parameter(torch.randn(1, self.motion_dct_keep_freq, hidden_size) * 0.02)
+        self.motion_dct_head = None
+        if self.use_motion_dct_loss:
+            self.motion_dct_head = L1RegressionActionHead(
+                input_dim=hidden_size,
+                hidden_dim=hidden_size,
+                action_dim=self.motion_dct_action_dim,
+                NUM_ACTIONS_CHUNK=self.motion_dct_keep_freq,
             )
 
         self._cached_action_token_hidden = None
@@ -150,23 +137,20 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
 
         return self._pack_masked_tokens(inputs_embeds, image_token_mask)
 
-    def _motion_dct_target(self, actions: torch.Tensor, chunk_len: int) -> torch.Tensor:
-        action_chunk = actions[:, :chunk_len, :].detach().float().cpu().numpy()
-        low_dct_gt = dct(action_chunk, type=2, axis=1, norm="ortho")[:, : self.motion_dct_keep_freq, :]
-        return torch.from_numpy(low_dct_gt).to(device=actions.device, dtype=actions.dtype)
-
     def _action_dit_loss_weight(
         self,
         train_step: int | None,
         max_train_steps: int | None,
         forced_weight: float | None = None,
     ) -> float:
+        stage = int(self.config.trainer.get("stage", 2)) if self.config and hasattr(self.config, "trainer") else 2
+        if stage == 1:
+            return 0.0
         if forced_weight is not None:
             return float(forced_weight)
         warmup = bool(self.config.trainer.get("warmup", True)) if self.config and hasattr(self.config, "trainer") else True
         if not warmup:
-            stage = int(self.config.trainer.get("stage", 2)) if self.config and hasattr(self.config, "trainer") else 2
-            return 0.0 if stage == 1 else 1.0
+            return 1.0
         if train_step is None or max_train_steps is None:
             return 1.0
         warmup_steps = max(1, int(max_train_steps * 0.1))
@@ -187,7 +171,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
                 output_hidden_states=True,
                 return_dict=True,
             )
-            return qwenvl_outputs.hidden_states[-1][:, -1:, :]
+            return qwenvl_outputs.hidden_states[-1][:, -self.motion_dct_keep_freq :, :]
 
     def _build_action_condition(
         self,
@@ -237,7 +221,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         num_refreshes = min(min(len(seq) for seq in image_sequences), max_refreshes)
         while num_refreshes > 0:
             start = (num_refreshes - 1) * self.vision_refresh_steps
-            end = start + self.action_horizon
+            end = start + self.fast_chunk_size
             if end <= actions.shape[1]:
                 return num_refreshes
             num_refreshes -= 1
@@ -264,22 +248,17 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         if num_refreshes == 0:
             raise ValueError(
                 "TwoChunk forward received no valid action chunks. "
-                f"actions.shape={tuple(actions.shape)}, action_horizon={self.action_horizon}, "
+                f"actions.shape={tuple(actions.shape)}, fast_chunk_size={self.fast_chunk_size}, "
                 f"vision_refresh_steps={self.vision_refresh_steps}"
             )
 
         first_frame_images = self._first_refresh_images(image_sequences)
         action_token_hidden = self._encode_action_token_hidden(first_frame_images, instructions)
 
-        # Auxiliary low-frequency supervision: the first-frame slow action token
-        # predicts the low-frequency trend of the whole twochunk motion window.
-        motion_chunk_len = min(num_refreshes * self.vision_refresh_steps, actions.shape[1])
-        low_dct_gt = self._motion_dct_target(actions, motion_chunk_len).to(
-            device=action_token_hidden.device,
-            dtype=action_token_hidden.dtype,
-        )
-        low_dct_pred = self.motion_dct_head(action_token_hidden)
-        motion_dct_loss = F.mse_loss(low_dct_pred.float(), low_dct_gt.float())
+        # Auxiliary low-frequency supervision: each slow motion token predicts
+        # one DCT frequency for the non-gripper action dimensions.
+        motion_chunk_len = min(self.motion_dct_chunk_len, num_refreshes * self.vision_refresh_steps, actions.shape[1])
+        motion_dct_loss = self._compute_motion_dct_loss(action_token_hidden, actions, motion_chunk_len)
         action_dit_loss_weight = self._action_dit_loss_weight(
             kwargs.get("train_step", None),
             kwargs.get("max_train_steps", None),
@@ -300,11 +279,11 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         action_chunks = []
         for refresh_i in range(num_refreshes):
             start = refresh_i * self.vision_refresh_steps
-            end = start + self.action_horizon
+            end = start + self.fast_chunk_size
             flat_frame_images.extend([image_sequence[refresh_i] for image_sequence in image_sequences])
             action_chunks.append(actions[:, start:end, :])
 
-        # Fast DiT condition: repeat the slow action-token hidden for every
+        # Fast DiT condition: repeat the slow motion-token hidden states for every
         # 4-step refresh, then concatenate it with that refresh's image embeds.
         flat_action_token_hidden = action_token_hidden.repeat(num_refreshes, 1, 1)
         encoder_hidden, encoder_attention_mask = self._build_action_condition(
@@ -341,7 +320,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         if self._cached_instruction_key != tuple(instructions):
             return True
 
-        steps_since_refresh = self._predict_call_count * max(int(self.action_horizon), 1)
+        steps_since_refresh = self._predict_call_count * max(int(self.fast_chunk_size), 1)
         return steps_since_refresh % self.language_refresh_steps == 0
 
     def _reset_predict_cache(self) -> None:
@@ -414,7 +393,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
             print(
                 "[TwoChunkFramework] "
                 f"{hidden_mode}; reset_cache={reset_cache}; "
-                f"fast_refresh_every={self.action_horizon} env steps; "
+                f"fast_refresh_every={self.fast_chunk_size} env steps; "
                 f"slow_refresh_every={self.language_refresh_steps} env steps; "
                 f"predict_call_count={self._predict_call_count}; "
                 f"slow_time={slow_time_s:.4f}s; "
@@ -431,7 +410,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         if examples and "action" in examples[0]:
             action_len = min(np.asarray(example["action"]).shape[0] for example in examples)
             while num_refreshes > 0:
-                end = (num_refreshes - 1) * self.vision_refresh_steps + self.action_horizon
+                end = (num_refreshes - 1) * self.vision_refresh_steps + self.fast_chunk_size
                 if end <= action_len:
                     return num_refreshes
                 num_refreshes -= 1
@@ -455,7 +434,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         if num_refreshes == 0:
             raise ValueError(
                 "TwoChunk predict_action received no valid action windows. "
-                f"action_horizon={self.action_horizon}, vision_refresh_steps={self.vision_refresh_steps}"
+                f"fast_chunk_size={self.fast_chunk_size}, vision_refresh_steps={self.vision_refresh_steps}"
             )
 
         first_frame_images = self._first_refresh_images(image_sequences)
@@ -479,7 +458,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
             )
 
         batch_size = len(examples)
-        pred_actions = pred_actions.view(num_refreshes, batch_size, self.action_horizon, -1)
-        pred_actions = pred_actions.permute(1, 0, 2, 3).reshape(batch_size, num_refreshes * self.action_horizon, -1)
+        pred_actions = pred_actions.view(num_refreshes, batch_size, self.fast_chunk_size, -1)
+        pred_actions = pred_actions.permute(1, 0, 2, 3).reshape(batch_size, num_refreshes * self.fast_chunk_size, -1)
         normalized_actions = pred_actions.detach().cpu().numpy()
         return {"normalized_actions": normalized_actions}

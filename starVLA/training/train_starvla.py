@@ -67,6 +67,33 @@ def setup_directories(cfg) -> Path:
     return output_dir
 
 
+def sync_twochunk_data_config(cfg):
+    """Derive TwoChunk dataloader action/video window timing from config."""
+    vla_cfg = OmegaConf.select(cfg, "datasets.vla_data")
+    framework_cfg = OmegaConf.select(cfg, "framework")
+    if vla_cfg is None or framework_cfg is None:
+        return cfg
+    if not bool(vla_cfg.get("twochunk_training", False)):
+        return cfg
+
+    qwenvl_cfg = framework_cfg.get("qwenvl", {})
+    window_size = int(qwenvl_cfg.get("language_refresh_steps", vla_cfg.get("twochunk_window_size", 32)))
+    vision_stride = int(qwenvl_cfg.get("vision_refresh_steps", vla_cfg.get("twochunk_vision_stride", 4)))
+
+    old_window_size = vla_cfg.get("twochunk_window_size", None)
+    old_vision_stride = vla_cfg.get("twochunk_vision_stride", None)
+    vla_cfg.twochunk_window_size = window_size
+    vla_cfg.twochunk_vision_stride = vision_stride
+
+    if old_window_size not in (None, window_size) or old_vision_stride not in (None, vision_stride):
+        logger.warning(
+            "Synced datasets.vla_data timing from framework config: "
+            f"twochunk_window_size {old_window_size} -> {window_size}, "
+            f"twochunk_vision_stride {old_vision_stride} -> {vision_stride}"
+        )
+    return cfg
+
+
 def prepare_data(cfg, accelerator, output_dir) -> DataLoader:
     """Prepare VLA training data."""
     logger.info(f"Creating VLA Dataset with Mixture `{cfg.datasets.vla_data.data_mix}`")
@@ -358,6 +385,8 @@ class VLATrainer(TrainerUtils):
         if self.accelerator.is_main_process:
             normalized_actions = output_dict["normalized_actions"]
             actions = np.array(actions)
+            pred_len = normalized_actions.shape[1]
+            actions = actions[:, -pred_len:, :]
             num_pots = np.prod(actions.shape)
             score = TrainerUtils.euclidean_distance(normalized_actions, actions)
             step_metrics["mse_score"] = score / num_pots
@@ -378,11 +407,20 @@ class VLATrainer(TrainerUtils):
     def _train_step(self, batch_vla, batch_vlm=None):
         """Execute single training step."""
         with self.accelerator.accumulate(self.model):
+            grad_norm_frequency = int(getattr(self.config.trainer, "grad_norm_logging_frequency", 0) or 0)
+            next_completed_step = self.completed_steps + 1
+            log_actiontoken_grad_norm = (
+                bool(getattr(self.config.trainer, "log_actiontoken_grad_norm", False))
+                and grad_norm_frequency > 0
+                and self.accelerator.sync_gradients
+                and next_completed_step % grad_norm_frequency == 0
+            )
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 output_dict = self.model.forward(
                     batch_vla,
                     train_step=self.completed_steps,
                     max_train_steps=self.config.trainer.max_train_steps,
+                    log_actiontoken_grad_norm=log_actiontoken_grad_norm,
                 )
                 total_loss = output_dict["action_loss"]
 
@@ -410,6 +448,9 @@ class VLATrainer(TrainerUtils):
             "motion_dct_loss",
             "weighted_motion_dct_loss",
             "dct_loss",
+            "grad_norm/action_token/action_dit_loss",
+            "grad_norm/action_token/motion_dct_loss",
+            "grad_norm/action_token/weighted_motion_dct_loss",
         ):
             if loss_key in output_dict:
                 loss_value = output_dict[loss_key]
@@ -442,6 +483,7 @@ class VLATrainer(TrainerUtils):
 def main(cfg) -> None:
     logger.info("VLA Training :: Warming Up")
 
+    cfg = sync_twochunk_data_config(cfg)
     cfg = wrap_config(cfg)
     logger.info("✅ Configuration wrapped for access tracking")
 

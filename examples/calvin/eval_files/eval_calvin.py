@@ -21,7 +21,7 @@ import json
 import logging
 import os
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import hydra
@@ -36,7 +36,6 @@ from calvin_agent.evaluation.utils import (
     count_success,
     get_env_state_for_initial_condition,
     get_log_dir,
-    print_and_save,
 )
 from moviepy.editor import ImageSequenceClip
 from omegaconf import OmegaConf
@@ -66,7 +65,7 @@ class Args:
     host: str = "127.0.0.1"
     port: int = 8000
     resize_size: int = 224
-    replan_steps: int = 5
+    replan_steps: int = 5  # Deprecated: action chunk refresh uses server metadata.
     pretrained_path: str = ""
     unnorm_key: str = ""
 
@@ -128,7 +127,8 @@ class CalvinPolicyClient:
         Args:
             obs: Calvin observation dict with keys:
                 - rgb_obs: dict with 'rgb_static' (200x200x3) and 'rgb_gripper' (84x84x3)
-                - robot_obs: (15,) proprioceptive state [ee_pos(3), ee_ori(3), gripper(2), joint_pos(7)]
+                - robot_obs: (15,) proprioceptive state
+                  [ee_pos(3), ee_ori_euler(3), gripper_width(1), joint_pos(7), gripper_action(1)]
             lang_annotation: Natural language task description
             get_action: If True, query model for new action chunk
 
@@ -145,10 +145,14 @@ class CalvinPolicyClient:
             image_tools.resize_with_pad(rgb_gripper, self.resize_size, self.resize_size)
         )
 
-        # Prepare input for policy server (aligned with eval_libero)
+        robot_obs = np.asarray(obs["robot_obs"], dtype=np.float32).reshape(-1)
+        state = np.concatenate([robot_obs[:6], robot_obs[14:15]], axis=0)
+
+        # Align with CALVIN LeRobot state keys: x,y,z,roll,pitch,yaw,gripper_action.
         example = {
             "image": [image, wrist_image],
             "lang": lang_annotation,
+            "state": state[None, :],
         }
 
         # Query model client. Timing is recorded inside the predict_action chunk refresh path.
@@ -215,13 +219,79 @@ def save_inference_stats(policy, eval_log_dir: Path, epoch):
     epoch_key = str(epoch)
     results_data.setdefault(epoch_key, {}).update(stats)
     with open(results_path, "w") as f:
-        json.dump(results_data, f)
+        json.dump(results_data, f, indent=2)
 
     print(
         "Average predict_action chunk time: "
         f"{stats['avg_model_inference_time_s']:.4f}s "
         f"over {stats['model_inference_time_count']} chunk calls"
     )
+
+
+def print_and_save_eval_results(
+    results,
+    sequences,
+    log_dir,
+    epoch,
+    requested_sequences,
+    available_sequences,
+):
+    """Print readable CALVIN metrics and save them as formatted JSON."""
+    epoch_key = str(epoch)
+    num_eval_sequences = len(results)
+    avg_seq_len = float(np.mean(results)) if results else 0.0
+    chain_sr = {i + 1: float(sr) for i, sr in enumerate(count_success(results))}
+
+    print(f"Results for Epoch {epoch}:")
+    print(f"Evaluated sequences: {num_eval_sequences}")
+    print(f"Requested sequences: {requested_sequences}")
+    print(f"Available sequences: {available_sequences}")
+    print(f"Average successful sequence length: {avg_seq_len:.4f}")
+    print("Success rates for i instructions in a row:")
+    for i, sr in chain_sr.items():
+        print(f"  {i}: {sr * 100:.1f}%")
+
+    cnt_success = Counter()
+    cnt_fail = Counter()
+    for result, (_, sequence) in zip(results, sequences):
+        for successful_task in sequence[:result]:
+            cnt_success[successful_task] += 1
+        if result < len(sequence):
+            failed_task = sequence[result]
+            cnt_fail[failed_task] += 1
+
+    total = cnt_success + cnt_fail
+    task_info = {}
+    if total:
+        print("Task success:")
+    for task in sorted(total):
+        task_info[task] = {"success": cnt_success[task], "total": total[task]}
+        sr = cnt_success[task] / total[task] * 100.0
+        print(f"  {task}: {cnt_success[task]} / {total[task]} | SR: {sr:.1f}%")
+
+    data = {
+        "num_eval_sequences": num_eval_sequences,
+        "num_requested_sequences": int(requested_sequences),
+        "num_available_sequences": int(available_sequences),
+        "avg_seq_len": avg_seq_len,
+        "chain_sr": chain_sr,
+        "task_info": task_info,
+    }
+
+    results_path = log_dir / "results.json"
+    previous_data = {}
+    try:
+        with open(results_path, "r") as file:
+            previous_data = json.load(file)
+    except FileNotFoundError:
+        pass
+
+    previous_data[epoch_key] = {**previous_data.get(epoch_key, {}), **data}
+    with open(results_path, "w") as file:
+        json.dump(previous_data, file, indent=2)
+
+    best_epoch, best_data = max(previous_data.items(), key=lambda item: item[1].get("avg_seq_len", 0.0))
+    print(f"Best model: epoch {best_epoch} with average sequence length {best_data['avg_seq_len']:.4f}")
 
 
 def evaluate_policy_ddp(
@@ -264,7 +334,10 @@ def evaluate_policy_ddp(
 
     eval_log_dir = get_log_dir(eval_log_dir)
     with open(eval_sequences_path, "r") as f:
-        eval_sequences = json.load(f)
+        all_eval_sequences = json.load(f)
+    available_sequences = len(all_eval_sequences)
+    eval_sequences = all_eval_sequences[:num_sequences]
+    requested_sequences = num_sequences
     # device_num = int(torch.distributed.get_world_size())
     # device_id = torch.distributed.get_rank()
     # assert num_sequences % device_num == 0
@@ -275,10 +348,11 @@ def evaluate_policy_ddp(
     local_sequence_i = 0
     base_sequence_i = 0  # device_id * interval_len
 
+    sequence_iter = eval_sequences
     if not debug:
-        eval_sequences = tqdm(eval_sequences, position=0, leave=True)
+        sequence_iter = tqdm(eval_sequences, position=0, leave=True)
 
-    for initial_state, eval_sequence in eval_sequences:
+    for initial_state, eval_sequence in sequence_iter:
         result = evaluate_sequence(
             env,
             policy,
@@ -295,26 +369,21 @@ def evaluate_policy_ddp(
         )
         results.append(result)
         if not debug:
-            eval_sequences.set_description(
-                " ".join([f"{i + 1}/5 : {v * 100:.1f}% |" for i, v in enumerate(count_success(results))]) + "|"
-            )
+            chain_lines = [f"{i + 1}/5={v * 100:.1f}%" for i, v in enumerate(count_success(results))]
+            sequence_iter.set_description(f"eval {len(results)}/{len(eval_sequences)} " + " ".join(chain_lines))
         local_sequence_i += 1
-
-    def merge_multi_list(res):
-        tmp = []
-        for l in res:
-            tmp.extend(l)
-        return tmp
-
-    def extract_iter_from_tqdm(tqdm_iter):
-        return [_ for _ in tqdm_iter]
 
     # if create_plan_tsne:
     #     create_tsne(plans, eval_log_dir, epoch)
 
-    eval_sequences = extract_iter_from_tqdm(eval_sequences)
-
-    print_and_save(results, eval_sequences, eval_log_dir, epoch)
+    print_and_save_eval_results(
+        results,
+        eval_sequences,
+        eval_log_dir,
+        epoch,
+        requested_sequences=requested_sequences,
+        available_sequences=available_sequences,
+    )
     save_inference_stats(policy, eval_log_dir, epoch)
 
     return results

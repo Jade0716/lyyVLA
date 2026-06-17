@@ -1,0 +1,17 @@
+{
+  "dataset_root": "/16T/liuyuyan/calvin-abc-d-lerobot",
+  "episode_index": 4,
+  "chunk_start": 20,
+  "chunk_len": 8,
+  "action_key": "relative_action",
+  "dct_keep_dims": [
+    2,
+    3,
+    4
+  ],
+  "plot_backend": "PIL",
+  "show_original": true,
+  "outputs": [
+    "examples/calvin/experiments/dct_action_chunk8_plots/ep000004_start20_all_action_dims_chunk8_dct_2_3_4.png"
+  ]
+}

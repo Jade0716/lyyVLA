@@ -24,7 +24,7 @@ mkdir -p ${output_dir}
 # mv this script to the output dir
 cp $0 ${output_dir}/
 
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1
 
 accelerate launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
@@ -32,9 +32,8 @@ accelerate launch \
   --main_process_port 29501 \
   starVLA/training/train_starvla.py \
   --config_yaml "${config_yaml}" \
-  --trainer.warmup true \
   --trainer.freeze_modules "${freeze_module_list}" \
-  --trainer.max_train_steps 70000 \
+  --trainer.max_train_steps 200000 \
   --trainer.save_interval 10000 \
   --trainer.logging_frequency 100 \
   --trainer.eval_interval 100 \

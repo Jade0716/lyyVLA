@@ -137,26 +137,6 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
 
         return self._pack_masked_tokens(inputs_embeds, image_token_mask)
 
-    def _action_dit_loss_weight(
-        self,
-        train_step: int | None,
-        max_train_steps: int | None,
-        forced_weight: float | None = None,
-    ) -> float:
-        stage = int(self.config.trainer.get("stage", 2)) if self.config and hasattr(self.config, "trainer") else 2
-        if stage == 1:
-            return 0.0
-        if forced_weight is not None:
-            return float(forced_weight)
-        warmup = bool(self.config.trainer.get("warmup", True)) if self.config and hasattr(self.config, "trainer") else True
-        if not warmup:
-            return 1.0
-        if train_step is None or max_train_steps is None:
-            return 1.0
-        warmup_steps = max(1, int(max_train_steps * 0.1))
-        progress = min(max(float(train_step), 0.0) / float(warmup_steps), 1.0)
-        return 0.001 + (1.0 - 0.001) * progress
-
     def _encode_action_token_hidden(
         self,
         batch_images: List,
@@ -259,21 +239,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         # one DCT frequency for the non-gripper action dimensions.
         motion_chunk_len = min(self.motion_dct_chunk_len, num_refreshes * self.vision_refresh_steps, actions.shape[1])
         motion_dct_loss = self._compute_motion_dct_loss(action_token_hidden, actions, motion_chunk_len)
-        action_dit_loss_weight = self._action_dit_loss_weight(
-            kwargs.get("train_step", None),
-            kwargs.get("max_train_steps", None),
-            kwargs.get("action_dit_loss_weight", None),
-        )
         weighted_motion_dct_loss = self.motion_dct_loss_weight * motion_dct_loss
-        if action_dit_loss_weight == 0.0:
-            zero_action_loss = motion_dct_loss.new_zeros(())
-            return {
-                "action_loss": weighted_motion_dct_loss,
-                "action_dit_loss": zero_action_loss,
-                "motion_dct_loss": motion_dct_loss,
-                "weighted_motion_dct_loss": weighted_motion_dct_loss,
-                "action_dit_loss_weight": action_dit_loss_weight,
-            }
 
         flat_frame_images = []
         action_chunks = []
@@ -303,13 +269,12 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
                 encoder_attention_mask=encoder_attention_mask.repeat(repeated_diffusion_steps, 1),
             )
 
-        total_loss = action_dit_loss_weight * action_loss + weighted_motion_dct_loss
+        total_loss = action_loss + weighted_motion_dct_loss
         return {
             "action_loss": total_loss,
             "action_dit_loss": action_loss,
             "motion_dct_loss": motion_dct_loss,
             "weighted_motion_dct_loss": weighted_motion_dct_loss,
-            "action_dit_loss_weight": action_dit_loss_weight,
         }
 
     def _should_refresh_action_token(self, instructions: List[str], batch_size: int) -> bool:

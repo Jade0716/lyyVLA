@@ -1,7 +1,7 @@
 """
 metrics.py
 
-Utility classes defining a Metrics container and multiple Trackers to enable model/stage-specific logging to various
+Utility classes defining a Metrics container and multiple Trackers to enable model-specific logging to various
 endpoints (e.g., JSONL local logs, Weights & Biases).
 """
 

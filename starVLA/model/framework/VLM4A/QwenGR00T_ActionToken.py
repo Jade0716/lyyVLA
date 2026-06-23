@@ -126,6 +126,17 @@ class Qwen_GR00T_ActionToken(Qwen_GR00T):
         low_dct_pred = self.motion_dct_head(action_token_hidden)
         return F.mse_loss(low_dct_pred.float(), low_dct_gt.float())
 
+    def _prepare_actions_target(self, actions: torch.Tensor) -> torch.Tensor:
+        if actions.ndim != 3:
+            raise ValueError(f"Expected actions to have shape [B, T, D], got {tuple(actions.shape)}.")
+        if actions.shape[1] != self.action_horizon:
+            raise ValueError(
+                "ActionToken expects dataloader action length to equal action_horizon "
+                f"so DiT and DCT use the same chunk; got T={actions.shape[1]} and "
+                f"action_horizon={self.action_horizon}."
+            )
+        return actions
+
     @staticmethod
     def _grad_norm_wrt_hidden(loss: torch.Tensor, hidden: torch.Tensor) -> torch.Tensor:
         if not torch.is_tensor(loss) or not loss.requires_grad:
@@ -139,12 +150,6 @@ class Qwen_GR00T_ActionToken(Qwen_GR00T):
         if grad is None:
             return hidden.new_zeros(())
         return grad.detach().float().norm(p=2)
-
-    def _action_dit_loss_weight(self) -> float:
-        if not self.config or not hasattr(self.config, "trainer"):
-            return 1.0
-        stage = int(self.config.trainer.get("stage", 2))
-        return 0.0 if stage == 1 else 1.0
 
     def forward(
         self,
@@ -165,38 +170,15 @@ class Qwen_GR00T_ActionToken(Qwen_GR00T):
             actions = torch.tensor(
                 np.array(actions), device=action_token_hidden.device, dtype=action_token_hidden.dtype
             )
-            actions_target = actions[:, -self.action_horizon :, :]
+            actions_target = self._prepare_actions_target(actions)
 
-        motion_chunk_len = min(self.motion_dct_chunk_len, actions_target.shape[1])
+        motion_chunk_len = self.action_horizon
         motion_dct_loss = self._compute_motion_dct_loss(
             action_token_hidden,
             actions_target,
             motion_chunk_len,
         )
         weighted_motion_dct_loss = self.motion_dct_loss_weight * motion_dct_loss
-        action_dit_loss_weight = self._action_dit_loss_weight()
-        if action_dit_loss_weight == 0.0:
-            zero_action_loss = motion_dct_loss.new_zeros(())
-            output = {
-                "action_loss": weighted_motion_dct_loss,
-                "action_dit_loss": zero_action_loss,
-                "motion_dct_loss": motion_dct_loss,
-                "weighted_motion_dct_loss": weighted_motion_dct_loss,
-                "action_dit_loss_weight": action_dit_loss_weight,
-            }
-            if kwargs.get("log_actiontoken_grad_norm", False):
-                output.update(
-                    {
-                        "grad_norm/action_token/action_dit_loss": zero_action_loss,
-                        "grad_norm/action_token/motion_dct_loss": self._grad_norm_wrt_hidden(
-                            motion_dct_loss, action_token_hidden
-                        ),
-                        "grad_norm/action_token/weighted_motion_dct_loss": self._grad_norm_wrt_hidden(
-                            weighted_motion_dct_loss, action_token_hidden
-                        ),
-                    }
-                )
-            return output
 
         repeated_diffusion_steps = 16
         if self.config and hasattr(self.config, "trainer"):
@@ -220,14 +202,13 @@ class Qwen_GR00T_ActionToken(Qwen_GR00T):
             state_repeated,
             encoder_attention_mask=action_token_attention_mask,
         )
-        total_loss = action_dit_loss_weight * action_dit_loss + weighted_motion_dct_loss
+        total_loss = action_dit_loss + weighted_motion_dct_loss
 
         output = {
             "action_loss": total_loss,
             "action_dit_loss": action_dit_loss,
             "motion_dct_loss": motion_dct_loss,
             "weighted_motion_dct_loss": weighted_motion_dct_loss,
-            "action_dit_loss_weight": action_dit_loss_weight,
         }
         if kwargs.get("log_actiontoken_grad_norm", False):
             output.update(

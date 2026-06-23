@@ -66,8 +66,6 @@ datasets:
     balance_trajectory_weights: true
 
 trainer:
-  warmup: true
-  stage: 2
   repeated_diffusion_steps: 16
   max_train_steps: 100000
   num_warmup_steps: 5000

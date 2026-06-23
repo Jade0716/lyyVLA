@@ -1,4 +1,4 @@
-57463f'y'd: qwenact
+run_id: qwenact
 run_root_dir: results/Checkpoints
 seed: 42
 wandb_entity: your_wandb_entity
@@ -7,7 +7,7 @@ is_debug: false
 version_id: "0.21"
 
 framework:
-  name: QwenGR00T_ActionToken
+  name: QwenGR00T_ActionToken_IDCTCondition
   # For a non-TwoChunk baseline, change only this to QwenGR00T_ActionToken.
   # It ignores image_sequence and unused TwoChunk qwenvl fields, while still
   # training on the regular image/lang/action fields from this dataloader.
@@ -19,10 +19,14 @@ framework:
     motion_dct_keep_freq: 4
     use_motion_dct_loss: true
     motion_dct_loss_weight: 1.0
+    use_idct_condition: true
+    detach_idct_condition: true
+    idct_condition_token_mode: per_timestep
   dino:
     dino_backbone: dinov2_vits14
 
   action_model:
+    num_target_vision_tokens: 8
     action_model_type: DiT-B
     hidden_size: 1024
     add_pos_embed: True
@@ -49,7 +53,7 @@ framework:
 datasets:
   vla_data:
     dataset_py: lerobot_datasets
-    include_state: true
+    include_state: false
     data_root_dir: /16T/liuyuyan/
     data_mix: calvin_abc
     action_type: delta_qpos
@@ -62,8 +66,9 @@ datasets:
     balance_trajectory_weights: true
 
 trainer:
-  warmup: true
-  stage: 2
+  action_dit_loss_warmup: true
+  action_dit_loss_start_step: 5000
+  action_dit_loss_warmup_steps: 5000
   repeated_diffusion_steps: 8
   max_train_steps: 100000
   num_warmup_steps: 5000

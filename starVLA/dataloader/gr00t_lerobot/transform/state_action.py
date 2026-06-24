@@ -96,7 +96,7 @@ class RotationTransform:
 
 
 class Normalizer:
-    valid_modes = ["q99", "mean_std", "min_max", "binary"]
+    valid_modes = ["q99", "mean_std", "min_max", "binary", "clip"]
 
     def __init__(self, mode: str, statistics: dict, binary_threshold: float = 0.5):
         self.mode = mode
@@ -132,7 +132,7 @@ class Normalizer:
             normalized[..., ~mask] = x[..., ~mask].to(x.dtype)
 
             # Clip the normalized values to be between -1 and 1
-            normalized = torch.clamp(normalized, -2.2, 2.2)
+            normalized = torch.clamp(normalized, -1, 1)
 
         elif self.mode == "mean_std":
             # Range of mean_std is not fixed, but can be positive or negative
@@ -186,6 +186,8 @@ class Normalizer:
         elif self.mode == "binary":
             # Range of binary is [0, 1]
             normalized = (x > self.binary_threshold).to(x.dtype)
+        elif self.mode == "clip":
+            normalized = torch.clamp(x, -1, 1)
         else:
             raise ValueError(f"Invalid normalization mode: {self.mode}")
 
@@ -209,6 +211,8 @@ class Normalizer:
             return (x + 1) / 2 * (max - min) + min
         elif self.mode == "binary":
             return (x > self.binary_threshold).to(x.dtype)
+        elif self.mode == "clip":
+            return torch.clamp(x, -1, 1)
         else:
             raise ValueError(f"Invalid normalization mode: {self.mode}")
 
@@ -383,6 +387,8 @@ class StateActionTransform(InvertibleModalityTransform):
                         0,
                         1,
                     ], f"Binary normalization should only have 0 or 1, but got {normalization_statistics[0]}"
+                elif normalization_mode == "clip":
+                    pass
                 else:
                     raise ValueError(f"Invalid normalization mode: {normalization_mode}")
         return self
@@ -462,7 +468,7 @@ class StateActionTransform(InvertibleModalityTransform):
             # If the state is not continuous, we should not use normalization modes other than binary
             elif (
                 not self.modality_metadata[key].continuous
-                and self.normalization_modes[key] != "binary"
+                and self.normalization_modes[key] not in {"binary", "clip"}
             ):
                 raise ValueError(
                     f"{key} is not continuous, so it should be normalized using `binary` mode"

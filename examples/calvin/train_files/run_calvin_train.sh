@@ -10,7 +10,7 @@
 # === Please modify the following paths according to your environment ===
 
 freeze_module_list=''
-config_yaml=./examples/calvin/train_files/starvla_cotrain_calvin.yaml
+config_yaml=./examples/calvin/train_files/starvla_cotrain_calvin_adapter.yaml
 
 # export action_input_dim=2048
 # === End of environment variable configuration ===
@@ -24,7 +24,7 @@ mkdir -p ${output_dir}
 # mv this script to the output dir
 cp $0 ${output_dir}/
 
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=0
 
 accelerate launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
@@ -33,7 +33,7 @@ accelerate launch \
   starVLA/training/train_starvla.py \
   --config_yaml "${config_yaml}" \
   --trainer.freeze_modules "${freeze_module_list}" \
-  --trainer.max_train_steps 200000 \
+  --trainer.max_train_steps 140000 \
   --trainer.save_interval 10000 \
   --trainer.logging_frequency 100 \
   --trainer.eval_interval 100 \

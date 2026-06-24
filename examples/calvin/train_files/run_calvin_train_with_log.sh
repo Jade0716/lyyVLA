@@ -12,7 +12,7 @@
 # export NCCL_TIMEOUT=1000
 
 run_root_dir=/16T/liuyuyan/lyyvla/results/Checkpoints
-run_id=calvin_gr00t_4actiontoken_8features-0.8B_$(date +%Y%m%d_%H%M%S)
+run_id=calvin_gr00t_4actiontoken_adapter-0.8B_$(date +%Y%m%d_%H%M%S)
 # run_id=calvin_adapter-0.8B_$(date +%Y%m%d_%H%M%S)
 export run_root_dir
 export run_id

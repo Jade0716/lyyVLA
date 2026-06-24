@@ -43,6 +43,7 @@ class ModelClient:
         self.client = WebsocketClientPolicy(host, port)
         meta = self.client.get_server_metadata()
         self.action_chunk_size = int(meta["action_chunk_size"])
+        self.include_state = bool(meta.get("include_state", False))
         self._server_metadata = meta
 
         self.policy_setup = policy_setup
@@ -50,6 +51,7 @@ class ModelClient:
         print(
             f"*** policy_setup: {policy_setup}, unnorm_key: {unnorm_key}, "
             f"action_chunk_size: {self.action_chunk_size}, "
+            f"include_state: {self.include_state}, "
             f"server_meta: {meta} ***"
         )
 
@@ -118,7 +120,9 @@ class ModelClient:
         """One env step.
 
         Args:
-            example: dict with keys ``image`` (list of np.uint8 HWC arrays) and ``lang`` (str).
+            example: dict with ``image`` and ``lang``. It must also contain raw
+                LIBERO ``state`` when the checkpoint config enables
+                ``datasets.vla_data.include_state``.
             step: env step counter; used for chunk caching.
 
         Returns:

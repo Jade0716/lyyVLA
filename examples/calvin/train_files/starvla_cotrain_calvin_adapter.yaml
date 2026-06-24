@@ -18,7 +18,7 @@ framework:
     action_model_type: VLA-Adapter
     hidden_dim: 1024
     action_dim: 7
-    state_dim: 7
+    state_dim: 8
     action_query_num: 64
     use_pro_version: true
     use_proprio: true

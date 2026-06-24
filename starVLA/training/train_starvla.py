@@ -37,6 +37,7 @@ from starVLA.dataloader import build_dataloader
 from starVLA.model.framework.base_framework import build_framework
 from starVLA.model.framework.share_tools import apply_config_compat
 from starVLA.training.trainer_utils.config_tracker import AccessTrackedConfig, wrap_config
+from starVLA.training.trainer_utils.source_snapshot import save_framework_source_snapshot
 from starVLA.training.trainer_utils.trainer_tools import TrainerUtils, build_param_lr_groups, setup_optimizer_and_scheduler, normalize_dotlist_args
 
 
@@ -209,6 +210,7 @@ class VLATrainer(TrainerUtils):
         full_yaml_path = output_dir / "config.full.yaml"
         OmegaConf.save(full_cfg, full_yaml_path, resolve=True)
         logger.info(f"📝 Full config saved at {full_yaml_path}")
+        save_framework_source_snapshot(self.model, output_dir, framework_name=self.config.framework.name)
 
         # 2. Save config.yaml — accessed-only snapshot (will be updated at checkpoints)
         if isinstance(self.config, AccessTrackedConfig):

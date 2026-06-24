@@ -7,7 +7,7 @@ is_debug: false
 version_id: "0.21"
 
 framework:
-  name: QwenGR00T_ActionToken_IDCTCondition
+  name: QwenGR00T_ActionToken
   # For a non-TwoChunk baseline, change only this to QwenGR00T_ActionToken.
   # It ignores image_sequence and unused TwoChunk qwenvl fields, while still
   # training on the regular image/lang/action fields from this dataloader.
@@ -22,17 +22,24 @@ framework:
     use_idct_condition: true
     detach_idct_condition: true
     idct_condition_token_mode: per_timestep
+    use_lora: true
+    lora_scope: language_model
+    lora_freeze_base_model: true
+    lora_r: 64
+    lora_alpha: 128
+    lora_dropout: 0.05
+    lora_target_modules: [q_proj, k_proj, v_proj, o_proj]
   dino:
     dino_backbone: dinov2_vits14
 
   action_model:
-    num_target_vision_tokens: 8
+    num_target_vision_tokens: 4
     action_model_type: DiT-B
     hidden_size: 1024
     add_pos_embed: True
     max_seq_len: 1024
     action_dim: 7
-    state_dim: 7
+    state_dim: 8
     # Used by QwenGR00T_ActionToken single-chunk training. TwoChunk uses
     # framework.qwenvl.vision_refresh_steps as its fast chunk size.
     action_horizon: 8
@@ -53,7 +60,7 @@ framework:
 datasets:
   vla_data:
     dataset_py: lerobot_datasets
-    include_state: false
+    include_state: true
     data_root_dir: /16T/liuyuyan/
     data_mix: calvin_abc
     action_type: delta_qpos
@@ -75,10 +82,9 @@ trainer:
   save_interval: 5000
   eval_interval: 100
   learning_rate:
-    base: 1e-05
-    # qwen_vl_interface: 1.0e-05
-    # motion_dct_head: 1.0e-05
-    # action_model: 1.0e-05
+    base: 2.5e-05
+    qwen_vl_interface: 1.0e-05
+    action_model: 1.0e-04
   lr_scheduler_type: cosine_with_min_lr
   scheduler_specific_kwargs:
     min_lr: 5.0e-07
@@ -92,7 +98,7 @@ trainer:
   log_actiontoken_grad_norm: false
   grad_norm_logging_frequency: 100
   gradient_clipping: 1.0
-  gradient_accumulation_steps: 4
+  gradient_accumulation_steps: 2
 
   optimizer:
     name: AdamW

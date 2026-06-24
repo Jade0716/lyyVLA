@@ -394,3 +394,51 @@ class PolicyNormProcessor:
                 v = v.detach().cpu().numpy()
             parts.append(np.asarray(v))
         return np.concatenate(parts, axis=-1)
+
+    # ------------------------------------------------------------------
+    # Forward path (env state -> model state)
+    # ------------------------------------------------------------------
+    def apply_state(self, state: np.ndarray) -> np.ndarray:
+        """Normalize state using the training-time pipeline.
+
+        Accepts either the exact training state dimension or CALVIN's full
+        15-dim ``robot_obs``. For CALVIN, the training state order is
+        ``x,y,z,roll,pitch,yaw,pad,gripper`` = ``robot_obs[:7]`` plus
+        ``robot_obs[14]``.
+        """
+        state = np.asarray(state, dtype=np.float32)
+        squeeze_batch = False
+        if state.ndim == 1:
+            state = state[None, :]
+            squeeze_batch = True
+        if state.ndim != 2:
+            raise ValueError(f"Expected state shape (D,) or (B, D), got {state.shape}.")
+
+        expected_dim = sum(self._state_key_dims.get(k, 1) for k in self._state_keys)
+        if state.shape[-1] == 15 and expected_dim == 8:
+            state = np.concatenate([state[:, :7], state[:, 14:15]], axis=-1)
+        elif state.shape[-1] != expected_dim:
+            raise ValueError(
+                f"State dim mismatch: got {state.shape[-1]}, expected {expected_dim} "
+                f"for state_keys={self._state_keys}. Full CALVIN robot_obs dim 15 is also accepted."
+            )
+
+        data: Dict[str, torch.Tensor] = {}
+        cursor = 0
+        for full_key in self._state_keys:
+            dim_k = self._state_key_dims.get(full_key, 1)
+            data[full_key] = torch.as_tensor(state[:, cursor : cursor + dim_k], dtype=torch.float32)
+            cursor += dim_k
+
+        out = self._transform.apply(data)
+
+        parts: List[np.ndarray] = []
+        for full_key in self._state_keys:
+            v = out[full_key]
+            if isinstance(v, torch.Tensor):
+                v = v.detach().cpu().numpy()
+            parts.append(np.asarray(v))
+        normalized = np.concatenate(parts, axis=-1)
+        if squeeze_batch:
+            return normalized[0]
+        return normalized

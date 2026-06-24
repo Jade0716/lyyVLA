@@ -33,6 +33,13 @@ from starVLA.model.framework.share_tools import read_mode_config
 from deployment.model_server.policy_norm_processor import PolicyNormProcessor
 
 
+def _config_flag(value: Any) -> bool:
+    """Parse bool-like values from saved YAML configs."""
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "0", "false", "no", "off", "none"}
+    return bool(value)
+
+
 class PolicyServerWrapper:
     """Wraps a `baseframework` for use as a websocket-server policy."""
 
@@ -60,6 +67,8 @@ class PolicyServerWrapper:
         framework_name = framework_cfg.get("name", "")
         action_model_cfg = framework_cfg["action_model"]
         qwenvl_cfg = framework_cfg.get("qwenvl", {})
+        vla_data_cfg = model_cfg.get("datasets", {}).get("vla_data", {})
+        self._include_state = _config_flag(vla_data_cfg.get("include_state", False))
 
         if "TwoChunk" in framework_name and "vision_refresh_steps" in qwenvl_cfg:
             self._action_chunk_size = int(qwenvl_cfg["vision_refresh_steps"])
@@ -122,6 +131,7 @@ class PolicyServerWrapper:
             "action_chunk_size": self._action_chunk_size,
             "available_unnorm_keys": self._available_unnorm_keys,
             "default_unnorm_key": self._default_unnorm_key,
+            "include_state": self._include_state,
         }
         # Enrich with per-embodiment keys when a default processor already exists.
         if self._default_unnorm_key is not None:
@@ -159,7 +169,21 @@ class PolicyServerWrapper:
                 )
         proc = self._get_processor(effective_key)
 
-        out = self._framework.predict_action(examples=examples, **kwargs)
+        model_examples = []
+        for example in examples:
+            model_example = dict(example)
+            if self._include_state:
+                if "state" not in model_example or model_example["state"] is None:
+                    raise ValueError(
+                        "Checkpoint config has datasets.vla_data.include_state=true, "
+                        "but the inference example does not contain `state`."
+                    )
+                model_example["state"] = proc.apply_state(model_example["state"])
+            else:
+                model_example.pop("state", None)
+            model_examples.append(model_example)
+
+        out = self._framework.predict_action(examples=model_examples, **kwargs)
         normalized = np.asarray(out["normalized_actions"])  # (B, T, D)
 
         unnorm = np.stack(

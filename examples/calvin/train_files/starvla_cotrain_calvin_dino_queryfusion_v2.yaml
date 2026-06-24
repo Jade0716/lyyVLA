@@ -29,7 +29,7 @@ framework:
     add_pos_embed: True
     max_seq_len: 1024
     action_dim: 7
-    state_dim: 7
+    state_dim: 8
     action_horizon: 8
 
     noise_beta_alpha: 1.5

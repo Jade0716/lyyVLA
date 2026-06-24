@@ -179,6 +179,12 @@ def eval_libero_with_attention(args: Args) -> None:
                     "image": [img, wrist_img],
                     "lang": task_description,
                 }
+                if client_model.include_state:
+                    # Normalized server-side with the checkpoint's training
+                    # q01/q99 statistics, then clipped to [-1, 1].
+                    example["state"] = np.expand_dims(
+                        np.asarray(state, dtype=np.float32), axis=0
+                    )
 
                 # Generate heatmap at interval
                 heatmap_paths = None

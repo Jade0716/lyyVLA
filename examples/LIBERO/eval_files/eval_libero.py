@@ -168,6 +168,12 @@ def eval_libero(args: Args) -> None:
                     "image": [observation["observation.primary"][0], observation["observation.wrist_image"][0]],
                     "lang": observation["instruction"][0],
                 }
+                if client_model.include_state:
+                    # Raw LIBERO proprioception in the same 8-D order used by
+                    # modality.json: xyz, axis-angle, two gripper qpos values.
+                    # The policy server applies checkpoint q01-q99
+                    # normalization and clips the result to [-1, 1].
+                    example_dict["state"] = observation["observation.state"]
 
                 start_time = time.time()
 

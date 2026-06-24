@@ -146,13 +146,13 @@ class CalvinPolicyClient:
         )
 
         robot_obs = np.asarray(obs["robot_obs"], dtype=np.float32).reshape(-1)
-        state = np.concatenate([robot_obs[:6], robot_obs[14:15]], axis=0)
 
-        # Align with CALVIN LeRobot state keys: x,y,z,roll,pitch,yaw,gripper_action.
+        # Send raw CALVIN robot_obs; the policy server extracts and normalizes
+        # the training state keys from checkpoint dataset_statistics.json.
         example = {
             "image": [image, wrist_image],
             "lang": lang_annotation,
-            "state": state[None, :],
+            "state": robot_obs[None, :],
         }
 
         # Query model client. Timing is recorded inside the predict_action chunk refresh path.

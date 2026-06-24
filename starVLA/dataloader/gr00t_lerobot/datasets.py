@@ -1435,25 +1435,9 @@ class LeRobotSingleDataset(Dataset):
                 )
             else:
                 state = np.concatenate(state, axis=1).astype(np.float16)
-                if self._should_drop_calvin_state_pad(state):
-                    state = np.delete(state, -2, axis=1)
                 sample["state"] = state
 
         return sample
-
-    def _should_drop_calvin_state_pad(self, state: np.ndarray) -> bool:
-        """Drop the extra CALVIN/Libero-Franka pad state to keep proprio aligned with 7-D actions."""
-        if state.ndim != 2 or state.shape[1] != 8:
-            return False
-
-        state_keys = list(self.modality_keys.get("state", []))
-        has_penultimate_pad = len(state_keys) == 8 and state_keys[-2] == "state.pad"
-        data_mix = ""
-        if self.data_cfg is not None:
-            data_mix = str(self.data_cfg.get("data_mix", ""))
-        is_calvin = "calvin" in self.dataset_name.lower() or "calvin" in data_mix.lower()
-
-        return is_calvin or has_penultimate_pad
 
     def get_step_data(self, trajectory_id: int, base_index: int) -> dict:
         """Get the RAW data for a single step in a trajectory. No transforms are applied.
@@ -2142,9 +2126,9 @@ def generate_action_mask_for_used_keys(
 ) -> list[bool]:
     """Generate per-dimension mask for action statistics.
 
-    A dimension gets ``mask=False`` only when its normalization mode is ``"binary"``.
-    This tells the inference code to skip continuous de-normalization for that dimension.
-    All other modes (q99, mean_std, min_max ...) produce ``mask=True``.
+    A dimension gets ``mask=True`` only when it has a continuous normalization mode.
+    Binary or intentionally unnormalized dimensions use ``mask=False`` so inference
+    skips continuous de-normalization for those dimensions.
 
     Args:
         action_modalities (dict): Configuration information for action modalities.
@@ -2167,15 +2151,11 @@ def generate_action_mask_for_used_keys(
             else:
                 dim_count = 1
 
-            # mask=False only when the normalization mode is explicitly "binary"
-            is_binary = (
-                normalization_modes.get(subkey) == "binary"
-                if normalization_modes is not None
-                else False
-            )
+            mode = normalization_modes.get(subkey) if normalization_modes is not None else None
+            is_continuous_normalized = mode in {"q99", "mean_std", "min_max"}
 
             for _ in range(dim_count):
-                mask.append(not is_binary)
+                mask.append(is_continuous_normalized)
 
     return mask
 

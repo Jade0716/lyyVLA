@@ -11,7 +11,7 @@ export NCCL_SOCKET_TIMEOUT_MS=360000
 ###########################################################################################
 # === Please modify the following paths according to your environment ===
 config_yaml=./examples/LIBERO/train_files/starvla_cotrain_libero_actiontoken.yaml
-run_root_dir=./results/Checkpoints
+run_root_dir=/16T/liuyuyan/lyyvla/results/Checkpoints
 run_id=${run_id:-0414_liberogoal_qwen3.5pi}  # 优先读取环境变量
 # === End of environment variable configuration ===
 ###########################################################################################
@@ -24,11 +24,11 @@ mkdir -p ${output_dir}
 # mv this script to the output dir
 cp $0 ${output_dir}/
 
-CPU_CORES=${CPU_CORES:-16-31}
-export CUDA_VISIBLE_DEVICES=2
-taskset -c "${CPU_CORES}" accelerate launch \
+export CUDA_VISIBLE_DEVICES=1
+accelerate launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
   --num_processes 1 \
+  --main_process_port 29501 \
   starVLA/training/train_starvla.py \
   --config_yaml ${config_yaml} \
   --trainer.vla_data.video_backend torchvision_av \

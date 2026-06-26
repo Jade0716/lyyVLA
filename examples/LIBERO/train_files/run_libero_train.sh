@@ -12,7 +12,6 @@ export NCCL_SOCKET_TIMEOUT_MS=360000
 ###########################################################################################
 # === Please modify the following paths according to your environment ===
 config_yaml=${config_yaml:-./examples/LIBERO/train_files/starvla_cotrain_libero_twochunk.yaml}
-run_root_dir=${run_root_dir:-/16T/liuyuyan/lyyvla/results/Checkpoints}
 run_id=${run_id:-liberoall_qwen3.5-0.8b-twochunk-$(date +%Y%m%d_%H%M%S)}
 LOG_TO_FILE=${LOG_TO_FILE:-1}
 # === End of environment variable configuration ===
@@ -61,8 +60,6 @@ accelerate launch \
   --trainer.eval_interval 100 \
   --run_root_dir ${run_root_dir} \
   --run_id ${run_id} \
-  --wandb_project starVLA_Libero \
-  --wandb_entity jade0716-hefei-university-of-technology \
   # --is_debug True
 
   # --main_process_port 0 \

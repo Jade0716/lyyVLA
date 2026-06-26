@@ -1,8 +1,8 @@
 run_id: qwenact_twochunk_state_memory
-run_root_dir: /16T/liuyuyan/lyyvla/results/Checkpoints
+run_root_dir: results/Checkpoints
 seed: 42
 wandb_entity: jade0716-hefei-university-of-technology
-wandb_project: starVLA_Libero
+wandb_project: 159_Libero
 is_debug: false
 version_id: "0.21"
 
@@ -10,7 +10,7 @@ framework:
   name: QwenGR00T_ActionToken_TwoChunk_StateMemory
 
   qwenvl:
-    base_vlm: /16T/liuyuyan/Qwen/Qwen3.5-0.8B
+    base_vlm: /mnt/4T_disk/16T/liuyuyan/Qwen/Qwen3.5-0.8B
     attn_implementation: flash_attention_2
     language_refresh_steps: 32
     vision_refresh_steps: 8

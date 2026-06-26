@@ -75,11 +75,40 @@ class _QWen3_5_VL_Interface(nn.Module):
 
         # alin qwen3.5 with qwen2.5
         self.model.config.hidden_size = self.model.config.text_config.hidden_size
+        self._truncate_text_layers(qwenvl_config.get("llm_truncate_layers", None))
 
         # only for fast base model
         if "-Action" in model_id:
             self._ACTION_TOKEN_MIN = _ACTION_TOKEN_MIN
             self._ACTION_TOKEN_MAX = _ACTION_TOKEN_MAX
+
+    def _truncate_text_layers(self, keep_layers: Optional[int]) -> None:
+        """Keep only the first N text decoder layers after loading full weights."""
+        if keep_layers is None:
+            return
+
+        keep_layers = int(keep_layers)
+        text_model = getattr(self.model, "model", None)
+        layers = getattr(text_model, "layers", None)
+        if text_model is None or layers is None:
+            raise AttributeError("Qwen3.5-VL text model does not expose model.layers for truncation.")
+
+        total_layers = len(layers)
+        if keep_layers <= 0 or keep_layers > total_layers:
+            raise ValueError(f"llm_truncate_layers must be in [1, {total_layers}], got {keep_layers}.")
+        if keep_layers == total_layers:
+            return
+
+        text_model.layers = nn.ModuleList(list(layers)[:keep_layers])
+        if hasattr(text_model, "config"):
+            text_model.config.num_hidden_layers = keep_layers
+        if hasattr(self.model.config, "text_config"):
+            self.model.config.text_config.num_hidden_layers = keep_layers
+
+        logger.info(
+            f"Truncated Qwen3.5-VL text decoder layers: kept first {keep_layers}/{total_layers}; "
+            f"dropped layers [{keep_layers}, {total_layers})."
+        )
 
     def forward(
         self,

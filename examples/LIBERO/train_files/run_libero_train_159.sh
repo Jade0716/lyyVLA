@@ -7,17 +7,18 @@ set -e
 # # used for check save when communication
 # export NCCL_BLOCKING_WAIT=1
 # export NCCL_ASYNC_ERROR_HANDLING=1
+export NCCL_IB_DISABLE=1
 export NCCL_TIMEOUT=10000  # timeout set to 1 hour (unit: seconds)
 export NCCL_SOCKET_TIMEOUT_MS=360000
 ###########################################################################################
 # === Please modify the following paths according to your environment ===
-config_yaml=${config_yaml:-./examples/RoboMemArena/train_files/starvla_cotrain_robomemarena_twochunk_state_memory.yaml}
-run_id=${run_id:-robomemarena_qwen3.5-0.8b-twochunk-$(date +%Y%m%d_%H%M%S)}
+config_yaml=${config_yaml:-./examples/LIBERO/train_files/starvla_cotrain_libero_twochunk_dct_memory_159.yaml}
+run_id=${run_id:-liberolong_qwen3.5-0.8b-twochunk-dctmemory-$(date +%Y%m%d_%H%M%S)}
 LOG_TO_FILE=${LOG_TO_FILE:-1}
 # === End of environment variable configuration ===
 ###########################################################################################
 
-
+run_root_dir=${run_root_dir:-./results/Checkpoints}
 # export WANDB_MODE=disabled
 
 output_dir=${run_root_dir}/${run_id}
@@ -46,11 +47,11 @@ fi
 # mv this script to the output dir
 cp "$0" "${output_dir}/"
 
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-1}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
 accelerate launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
-  --num_processes 1 \
-  --main_process_port 29501 \
+  --num_processes 4 \
+  --main_process_port 29500 \
   starVLA/training/train_starvla.py \
   --config_yaml ${config_yaml} \
   --trainer.vla_data.video_backend torchvision_av \

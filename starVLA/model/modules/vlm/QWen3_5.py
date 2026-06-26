@@ -88,10 +88,16 @@ class _QWen3_5_VL_Interface(nn.Module):
             return
 
         keep_layers = int(keep_layers)
-        text_model = getattr(self.model, "model", None)
+        base_model = getattr(self.model, "model", None)
+        text_model = getattr(base_model, "language_model", None)
+        if text_model is None:
+            text_model = base_model
         layers = getattr(text_model, "layers", None)
         if text_model is None or layers is None:
-            raise AttributeError("Qwen3.5-VL text model does not expose model.layers for truncation.")
+            raise AttributeError(
+                "Qwen3.5-VL text model does not expose model.language_model.layers "
+                "or model.layers for truncation."
+            )
 
         total_layers = len(layers)
         if keep_layers <= 0 or keep_layers > total_layers:

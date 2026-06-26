@@ -11,6 +11,7 @@ from starVLA.model.framework.VLM4A.QwenGR00T_ActionToken import (
     Qwen_GR00T_ActionToken,
     _as_bool,
 )
+from starVLA.model.modules.action_model.GatedAttentionActionHeader import GatedAttentionActionHead
 from starVLA.model.modules.action_model.MLP_ActionHeader_TwoChunk import L1RegressionActionHead
 from starVLA.model.modules.dino_model.dinov3 import get_twochunk_dino_model
 from starVLA.model.tools import FRAMEWORK_REGISTRY
@@ -85,11 +86,9 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
             in_features=self.dino_encoder.num_channels,
             out_features=hidden_size,
         )
-        self.action_model = L1RegressionActionHead(
-            input_dim=hidden_size,
-            hidden_dim=int(self.config.framework.action_model.hidden_size),
+        self.action_model = self._build_fast_action_head(
+            hidden_size=hidden_size,
             action_dim=action_dim,
-            NUM_ACTIONS_CHUNK=self.fast_chunk_size,
         )
         self.l1_loss = nn.L1Loss()
 
@@ -100,6 +99,38 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         self._predict_call_count = 0
 
         self._refresh_idct_basis(chunk_len=self.motion_dct_chunk_len)
+
+    def _build_fast_action_head(
+        self,
+        hidden_size: int,
+        action_dim: int,
+    ) -> nn.Module:
+        action_cfg = self.config.framework.get("action_model", {})
+        head_type = str(action_cfg.get("action_head_type", "pooling_mlp")).lower()
+        hidden_dim = int(action_cfg.get("hidden_size", hidden_size))
+
+        if head_type in {"gated_attention", "vla_adapter", "adapter"}:
+            return GatedAttentionActionHead(
+                input_dim=hidden_size,
+                hidden_dim=hidden_dim,
+                action_dim=action_dim,
+                NUM_ACTIONS_CHUNK=self.fast_chunk_size,
+                num_blocks=int(action_cfg.get("gated_num_blocks", 8)),
+                num_heads=int(action_cfg.get("gated_num_heads", 8)),
+                use_rope=_as_bool(action_cfg.get("gated_use_rope", True)),
+                adapter_token_count=int(action_cfg.get("gated_adapter_token_count", self.motion_dct_keep_freq)),
+            )
+        if head_type not in {"pooling_mlp", "mlp", "legacy"}:
+            raise ValueError(
+                f"Unknown action_model.action_head_type={head_type}. "
+                "Expected one of: pooling_mlp, gated_attention."
+            )
+        return L1RegressionActionHead(
+            input_dim=hidden_size,
+            hidden_dim=hidden_dim,
+            action_dim=action_dim,
+            NUM_ACTIONS_CHUNK=self.fast_chunk_size,
+        )
 
     def _refresh_idct_basis(self, chunk_len: int) -> None:
         basis_key = f"_idct_basis_{chunk_len}_{self.motion_dct_keep_freq}"

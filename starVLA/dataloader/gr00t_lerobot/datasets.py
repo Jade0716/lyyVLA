@@ -631,6 +631,7 @@ class LeRobotSingleDataset(Dataset):
         # self._episodes = self._get_episode_info() # TODO why we need this func
         self.curr_traj_data = None
         self.curr_traj_id = None
+        self._dct_memory_cache = {}
 
         self._trajectory_ids, self._trajectory_lengths = self._get_trajectories()
         self._modality_keys = self._get_modality_keys()
@@ -1387,7 +1388,9 @@ class LeRobotSingleDataset(Dataset):
         raw_data = self.get_step_data(trajectory_id, base_index)
         data = self.transforms(raw_data)
         sample = self._pack_sample(data)
-        return self._attach_state_memory(sample, trajectory_id, base_index)
+        sample = self._attach_state_memory(sample, trajectory_id, base_index)
+        sample = self._attach_dct_memory(sample, trajectory_id, base_index)
+        return sample
 
     def _pack_sample(self, data: dict) -> dict:
         """Pack transformed modality data into training sample format."""
@@ -1447,6 +1450,108 @@ class LeRobotSingleDataset(Dataset):
             self.data_cfg is not None
             and self.data_cfg.get("state_memory_training", False)
         )
+
+    def _dct_memory_enabled(self) -> bool:
+        return bool(
+            self.data_cfg is not None
+            and self.data_cfg.get("dct_memory_training", False)
+        )
+
+    def _dct_memory_cache_dir(self) -> Path:
+        if self.data_cfg is not None and self.data_cfg.get("dct_memory_cache_dir", None):
+            cache_dir = Path(self.data_cfg.get("dct_memory_cache_dir"))
+            if not cache_dir.is_absolute():
+                cache_dir = self.dataset_path / cache_dir
+            return cache_dir
+
+        chunk_len = int(self.data_cfg.get("dct_memory_chunk_len", 32))
+        chunk_keep = int(self.data_cfg.get("dct_memory_chunk_keep_freq", 4))
+        summary_keep = int(self.data_cfg.get("dct_memory_summary_keep_freq", 8))
+        suffix = f"chunk{chunk_len}_recent{chunk_keep}_summary{summary_keep}_sliding-start"
+        return self.dataset_path / "meta" / "dct_bank_cache" / suffix
+
+    def _load_dct_memory_cache(self, trajectory_id: int):
+        cache_key = int(trajectory_id)
+        if cache_key in self._dct_memory_cache:
+            return self._dct_memory_cache[cache_key]
+
+        cache_path = self._dct_memory_cache_dir() / f"episode_{cache_key:06d}.npz"
+        if not cache_path.exists():
+            raise FileNotFoundError(
+                f"dct_memory_training=true but cache file is missing: {cache_path}. "
+                "Run examples/LIBERO/train_files/build_dct_bank_cache.py first."
+            )
+        cache = np.load(cache_path)
+        self._dct_memory_cache[cache_key] = cache
+        return cache
+
+    @staticmethod
+    def _dct_memory_row_for_start(cache, start: int) -> int:
+        start_indices = cache["start_indices"] if "start_indices" in cache else None
+        if start_indices is None:
+            return int(start)
+        if int(start) < len(start_indices) and int(start_indices[int(start)]) == int(start):
+            return int(start)
+        matches = np.where(start_indices == int(start))[0]
+        if len(matches) != 1:
+            raise IndexError(f"Could not find DCT memory start={start} in cache.")
+        return int(matches[0])
+
+    def _attach_dct_memory(
+        self,
+        sample: dict,
+        trajectory_id: int,
+        base_index: int,
+    ) -> dict:
+        """Attach cached DCT motion memory for opt-in DCTMemory frameworks."""
+        if not self._dct_memory_enabled():
+            return sample
+
+        cache = self._load_dct_memory_cache(trajectory_id)
+        chunk_len = int(cache["chunk_len"]) if "chunk_len" in cache else int(
+            self.data_cfg.get("dct_memory_chunk_len", 32)
+        )
+        action_dim = int(cache["action_dim"]) if "action_dim" in cache else int(
+            self.data_cfg.get("dct_memory_action_dim", 7)
+        )
+        chunk_keep = int(cache["chunk_keep_freq"]) if "chunk_keep_freq" in cache else int(
+            cache["keep_freq"] if "keep_freq" in cache else self.data_cfg.get("dct_memory_chunk_keep_freq", 4)
+        )
+        summary_keep = int(cache["summary_keep_freq"]) if "summary_keep_freq" in cache else int(
+            cache["keep_freq"] if "keep_freq" in cache else self.data_cfg.get("dct_memory_summary_keep_freq", 8)
+        )
+
+        usable_chunks = int(base_index) // chunk_len
+        summary = np.zeros((summary_keep, action_dim), dtype=np.float16)
+        recent = np.zeros((chunk_keep, action_dim), dtype=np.float16)
+        summary_valid = False
+        recent_valid = False
+        summary_count = 0
+        memory_start = 0
+
+        if usable_chunks > 0:
+            memory_start = int(base_index) - usable_chunks * chunk_len
+            row = self._dct_memory_row_for_start(cache, memory_start)
+            recent_idx = usable_chunks - 1
+            recent = cache["chunk_dct"][row, recent_idx].astype(np.float16)
+            recent_valid = True
+            if usable_chunks >= 2:
+                summary_idx = usable_chunks - 2
+                summary = cache["prefix_summary_dct"][row, summary_idx].astype(np.float16)
+                if "prefix_summary_count" in cache:
+                    summary_count = int(cache["prefix_summary_count"][row, summary_idx])
+                else:
+                    summary_count = usable_chunks - 1
+                summary_valid = True
+
+        sample["dct_memory_summary"] = summary
+        sample["dct_memory_recent"] = recent
+        sample["dct_memory_num_chunks"] = np.asarray(usable_chunks, dtype=np.int16)
+        sample["dct_memory_summary_count"] = np.asarray(summary_count, dtype=np.int16)
+        sample["dct_memory_start"] = np.asarray(memory_start, dtype=np.int32)
+        sample["dct_memory_summary_valid"] = np.asarray(summary_valid, dtype=np.bool_)
+        sample["dct_memory_recent_valid"] = np.asarray(recent_valid, dtype=np.bool_)
+        return sample
 
     def _get_state_values_at_indices(self, step_indices: np.ndarray) -> np.ndarray:
         """Load and normalize state vectors at explicit trajectory-local indices."""
@@ -2471,6 +2576,7 @@ class LeRobotMixtureDataset(Dataset):
                 data = dataset.transforms(raw_data)
                 sample = dataset._pack_sample(data)
                 sample = dataset._attach_state_memory(sample, trajectory_id, step)
+                sample = dataset._attach_dct_memory(sample, trajectory_id, step)
                 
                 return sample
                 

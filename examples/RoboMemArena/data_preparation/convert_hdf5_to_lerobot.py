@@ -34,10 +34,6 @@ import pandas as pd
 FULL_TRAJECTORY_RE = re.compile(r"_seed(?P<seed>\d+)_task(?P<task_id>\d+)\.hdf5$")
 EXPECTED_TASKS = tuple(range(1, 27))
 VIDEO_KEYS = ("observation.images.image", "observation.images.wrist_image")
-# The June 2026 Task 5 refresh targets the middle drawer. Some local mirrors
-# retain 20 older bottom-drawer trajectories in the same folder; those are not
-# demonstrations of the current Task 5 BDDL and must not enter training.
-STALE_FILENAME_PATTERNS = {5: ("bottom_drawer",)}
 STATE_NAMES = (
     "x",
     "y",
@@ -141,9 +137,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--prompt-source",
-        choices=("bddl", "hdf5"),
-        default="bddl",
-        help="Use evaluation-aligned BDDL stem prompts (default) or HDF5 language attributes.",
+        choices=("hdf5", "bddl"),
+        default="hdf5",
+        help=(
+            "Use each HDF5 episode's original language_instruction (default). "
+            "BDDL prompts are only for evaluation-aligned ablations."
+        ),
     )
     parser.add_argument(
         "--tasks",
@@ -171,6 +170,14 @@ def parse_args() -> argparse.Namespace:
         "--strict-task-coverage",
         action="store_true",
         help="Fail if any selected task has no complete trajectory.",
+    )
+    parser.add_argument(
+        "--exclude-stale-bddl-conflicts",
+        action="store_true",
+        help=(
+            "Only useful with --prompt-source=bddl: exclude known files whose "
+            "filename language conflicts with the current BDDL task prompt."
+        ),
     )
     parser.add_argument(
         "--overwrite",
@@ -204,10 +211,16 @@ def parse_task_spec(spec: str) -> tuple[int, ...]:
     return tuple(sorted(tasks))
 
 
-def discover_sources(source_roots: Iterable[Path], selected_tasks: set[int]) -> list[SourceDemo]:
+def discover_sources(
+    source_roots: Iterable[Path],
+    selected_tasks: set[int],
+    *,
+    exclude_stale_bddl_conflicts: bool = False,
+) -> list[SourceDemo]:
     demos: list[SourceDemo] = []
     seen_files: set[Path] = set()
     stale_files: list[Path] = []
+    stale_filename_patterns = {5: ("bottom_drawer",)}
     for root in source_roots:
         if not root.exists():
             raise FileNotFoundError(f"Source root does not exist: {root}")
@@ -226,7 +239,9 @@ def discover_sources(source_roots: Iterable[Path], selected_tasks: set[int]) -> 
             seed = int(match.group("seed"))
             if task_id not in selected_tasks:
                 continue
-            if any(pattern in path.name for pattern in STALE_FILENAME_PATTERNS.get(task_id, ())):
+            if exclude_stale_bddl_conflicts and any(
+                pattern in path.name for pattern in stale_filename_patterns.get(task_id, ())
+            ):
                 stale_files.append(path)
                 continue
             with h5py.File(path, "r") as handle:
@@ -239,8 +254,8 @@ def discover_sources(source_roots: Iterable[Path], selected_tasks: set[int]) -> 
     demos.sort(key=lambda item: (item.task_id, item.seed, str(item.path), item.demo_key))
     if stale_files:
         print(
-            f"WARNING: excluded {len(stale_files)} stale trajectories that conflict with "
-            f"the current task definitions; first example: {stale_files[0]}",
+            f"WARNING: excluded {len(stale_files)} trajectories whose filename language "
+            f"conflicts with the current BDDL prompt; first example: {stale_files[0]}",
             file=sys.stderr,
         )
     return demos
@@ -519,7 +534,14 @@ def main() -> None:
     if shutil.which(args.ffmpeg_bin) is None:
         raise FileNotFoundError(f"ffmpeg executable not found: {args.ffmpeg_bin}")
 
-    sources = discover_sources(source_roots, set(selected_tasks))
+    if args.exclude_stale_bddl_conflicts and args.prompt_source != "bddl":
+        raise ValueError("--exclude-stale-bddl-conflicts is only valid with --prompt-source=bddl")
+
+    sources = discover_sources(
+        source_roots,
+        set(selected_tasks),
+        exclude_stale_bddl_conflicts=args.exclude_stale_bddl_conflicts,
+    )
     available_tasks = sorted({source.task_id for source in sources})
     missing_tasks = sorted(set(selected_tasks) - set(available_tasks))
     print(f"Discovered {len(sources)} full-trajectory demos for tasks {available_tasks}")
@@ -547,7 +569,7 @@ def main() -> None:
         else {}
     )
     selected_present_tasks = sorted({source.task_id for source in sources})
-    task_index_by_id = {task_id: task_id - 1 for task_id in selected_present_tasks}
+    task_index_by_prompt: dict[str, int] = {}
     tasks_rows: list[dict[str, object]] = []
     episodes_rows: list[dict[str, object]] = []
     provenance_rows: list[dict[str, object]] = []
@@ -573,7 +595,10 @@ def main() -> None:
         if not prompt:
             raise ValueError(f"Empty prompt for {source.path}:{source.demo_key}")
 
-        task_index = task_index_by_id[source.task_id]
+        if prompt not in task_index_by_prompt:
+            task_index_by_prompt[prompt] = len(task_index_by_prompt)
+            tasks_rows.append({"task_index": task_index_by_prompt[prompt], "task": prompt})
+        task_index = task_index_by_prompt[prompt]
         chunk_index = episode_index // args.chunk_size
         length = len(actions)
         global_indices = np.arange(total_frames, total_frames + length, dtype=np.int64)
@@ -658,15 +683,6 @@ def main() -> None:
 
     if progress is not None:
         progress.finish()
-
-    for task_id in selected_present_tasks:
-        task_index = task_index_by_id[task_id]
-        source_for_task = next(source for source in sources if source.task_id == task_id)
-        if args.prompt_source == "bddl":
-            prompt = bddl_prompts[task_id]
-        else:
-            prompt = str(load_demo(source_for_task)["hdf5_instruction"])
-        tasks_rows.append({"task_index": task_index, "task": prompt})
 
     total_chunks = (len(sources) + args.chunk_size - 1) // args.chunk_size
     info = build_info(

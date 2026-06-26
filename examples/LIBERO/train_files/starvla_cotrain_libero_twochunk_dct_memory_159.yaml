@@ -1,5 +1,5 @@
-run_id: qwenact_twochunk_state_memory
-run_root_dir: results/Checkpoints
+run_id: qwenact_twochunk_DCTmemory
+run_root_dir: /mnt/4T_disk/16T/liuyuyan/lyyvla/results/Checkpoints
 seed: 42
 wandb_entity: jade0716-hefei-university-of-technology
 wandb_project: 159_Libero
@@ -7,11 +7,10 @@ is_debug: false
 version_id: "0.21"
 
 framework:
-  name: QwenGR00T_ActionToken_TwoChunk
+  name: QwenGR00T_ActionToken_TwoChunk_DCTMemory
 
   qwenvl:
     base_vlm: /mnt/4T_disk/16T/liuyuyan/Qwen/Qwen3.5-0.8B
-    llm_truncate_layers: 14
     attn_implementation: flash_attention_2
     language_refresh_steps: 32
     vision_refresh_steps: 8
@@ -40,24 +39,30 @@ framework:
     qformer_num_layers: 2
     qformer_dropout: 0.1
 
-  state_memory:
-    stride: 8
-    recent_size: 4
-    embed_dim: 128
+  dct_memory:
+    chunk_len: 32
+    chunk_keep_freq: 4
+    summary_keep_freq: 8
+    summary_count_embed_dim: 128
+    action_dim: 7
     noise_enabled: true
-    noise_std: 0.02
-    noise_ar: 0.9
-    preserve_gripper: true
+    noise_std: 0.01
 
   action_model:
+    action_head_type: gated_attention
+    gated_num_blocks: 8
+    gated_num_heads: 8
+    gated_use_rope: true
+    gated_adapter_token_count: 16
     num_target_vision_tokens: 4
     action_model_type: DiT-B
     hidden_size: 1024
-    add_pos_embed: true
+    add_pos_embed: True
     max_seq_len: 1024
     action_dim: 7
     state_dim: 8
     action_horizon: 8
+
     noise_beta_alpha: 1.5
     noise_beta_beta: 1.0
     noise_s: 0.999
@@ -67,7 +72,7 @@ framework:
       dropout: 0.2
       final_dropout: true
       interleave_self_attention: true
-      norm_type: ada_norm
+      norm_type: "ada_norm"
       num_layers: 16
       positional_embeddings: null
 
@@ -76,37 +81,39 @@ datasets:
     dataset_py: lerobot_datasets
     include_state: true
     data_root_dir: /mnt/4T_disk/16T/liuyuyan/libero/
-    data_mix: libero_long
+    data_mix: libero_goal
     action_type: delta_qpos
     twochunk_training: true
-    state_memory_training: true
-    state_memory_stride: 8
-    CoT_prompt: "The robot is franka with single arm. The control frequency is 20 Hz. Your task is: {instruction}. Based on the current visual observation and task instruction, summarize the low-frequency future motion trend of the next 32 control actions into 4 learnable action tokens, then use the current observation to refine the next 8 control actions."
+    dct_memory_training: true
+    dct_memory_chunk_len: 32
+    dct_memory_chunk_keep_freq: 4
+    dct_memory_summary_keep_freq: 8
+    CoT_prompt: "The robot is franka with single arm. The control frequency is 20 Hz. Your task is: {instruction}. Based on the current visual observation and task instruction, summarize the low-frequency future motion trend of the next 32 control actions into 4 learnable action tokens, then use the current observation to refine the next 4 control actions."
     per_device_batch_size: 8
     load_all_data_for_training: true
     video_backend: torchvision_av
     balance_dataset_weights: true
     balance_trajectory_weights: true
-    num_workers: 4
 trainer:
   action_dit_loss_warmup: true
   action_dit_loss_start_step: 10000
-  action_dit_loss_warmup_steps: 10000
+  action_dit_loss_warmup_steps: 5000
   repeated_diffusion_steps: 16
   max_train_steps: 100000
   num_warmup_steps: 5000
-  save_interval: 5000
+  save_interval: 10000
   eval_interval: 100
   learning_rate:
     base: 2.5e-05
     qwen_vl_interface: 1.0e-05
     action_model: 1.0e-04
-    state_memory_encoder: 1.0e-04
-    state_summary_gru: 1.0e-04
+    dct_summary_proj: 1.0e-04
+    dct_recent_proj: 1.0e-04
+    dct_summary_count_mlp: 1.0e-04
   lr_scheduler_type: cosine_with_min_lr
   scheduler_specific_kwargs:
     min_lr: 5.0e-07
-  freeze_modules: ""
+  freeze_modules: ''
   loss_scale:
     vla: 1.0
     vlm: 0.1

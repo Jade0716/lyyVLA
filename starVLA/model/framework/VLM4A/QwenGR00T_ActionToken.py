@@ -1,3 +1,4 @@
+import time
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -6,9 +7,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from scipy.fft import dct
 
+from deployment.model_server.tools.image_tools import to_pil_preserve
 from starVLA.model.framework.VLM4A.QwenGR00T import Qwen_GR00T
 from starVLA.model.modules.action_model.MLP_ActionHeader import L1RegressionActionHead
 from starVLA.model.tools import FRAMEWORK_REGISTRY
+from starVLA.training.trainer_utils.trainer_tools import resize_images
 
 
 def _as_bool(value) -> bool:
@@ -102,6 +105,88 @@ class Qwen_GR00T_ActionToken(Qwen_GR00T):
             device=last_hidden.device,
         )
         return last_hidden, action_token_attention_mask
+
+    @staticmethod
+    def _sync_cuda_if_needed() -> None:
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+    @torch.inference_mode()
+    def predict_action(
+        self,
+        examples: List[dict],
+        **kwargs: str,
+    ) -> dict:
+        """Predict an action chunk and report synchronized model-only latency.
+
+        Image conversion, resize, processor/tokenization, state normalization,
+        action un-normalization, and websocket overhead are intentionally
+        excluded to match the VLA-Adapter evaluation timing boundary.
+        """
+        if type(examples) is not list:
+            examples = [examples]
+
+        batch_images = [to_pil_preserve(example["image"]) for example in examples]
+        instructions = [example["lang"] for example in examples]
+        state = [example["state"] for example in examples] if "state" in examples[0] else None
+
+        train_obs_image_size = getattr(self.config.datasets.vla_data, "obs_image_size", None)
+        if train_obs_image_size:
+            batch_images = resize_images(batch_images, target_size=train_obs_image_size)
+
+        # Keep processor/tokenization and host-to-device input preparation out
+        # of the measured model inference interval.
+        qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(
+            images=batch_images,
+            instructions=instructions,
+        )
+
+        self._sync_cuda_if_needed()
+        inference_start = time.perf_counter()
+
+        qwen_inputs = self._append_action_query(qwen_inputs)
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            qwenvl_outputs = self.qwen_vl_interface(
+                **qwen_inputs,
+                output_attentions=False,
+                output_hidden_states=True,
+                return_dict=True,
+            )
+            action_token_hidden = qwenvl_outputs.hidden_states[-1][
+                :, -self.motion_dct_keep_freq :, :
+            ]
+
+        action_token_attention_mask = torch.ones(
+            action_token_hidden.shape[0],
+            action_token_hidden.shape[1],
+            dtype=torch.bool,
+            device=action_token_hidden.device,
+        )
+        state_tensor = (
+            torch.from_numpy(np.array(state)).to(
+                action_token_hidden.device,
+                dtype=action_token_hidden.dtype,
+            )
+            if state is not None
+            else None
+        )
+        with torch.autocast("cuda", dtype=torch.float32):
+            pred_actions = self.action_model.predict_action(
+                action_token_hidden,
+                state_tensor,
+                encoder_attention_mask=action_token_attention_mask,
+            )
+
+        self._sync_cuda_if_needed()
+        model_inference_time_s = time.perf_counter() - inference_start
+        normalized_actions = pred_actions.detach().float().cpu().numpy()
+        return {
+            "normalized_actions": normalized_actions,
+            "inference_timing": {
+                "model_inference_time_s": model_inference_time_s,
+                "timing_scope": "model_only_after_preprocess",
+            },
+        }
 
     def _motion_dct_target(self, actions: torch.Tensor, chunk_len: int) -> torch.Tensor:
         action_chunk = actions[:, :chunk_len, : self.motion_dct_action_dim].detach().float().cpu().numpy()

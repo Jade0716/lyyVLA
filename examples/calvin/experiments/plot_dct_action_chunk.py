@@ -33,13 +33,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset-root",
         type=Path,
-        default=Path("/16T/liuyuyan/calvin-abc-d-lerobot"),
+        default=Path("/16T/liuyuyan/libero/libero_10_no_noops_1.0.0_lerobot"),
         help="LeRobot-format CALVIN dataset root.",
     )
     parser.add_argument(
         "--episode-index",
         type=int,
-        default=4,
+        default=5,
         help="Episode id to read from meta/data.",
     )
     parser.add_argument(
@@ -47,19 +47,19 @@ def parse_args() -> argparse.Namespace:
         "--start-frame",
         dest="chunk_start",
         type=int,
-        default=20,
+        default=10,
         help="Start frame of the action chunk inside the selected episode.",
     )
     parser.add_argument(
         "--chunk-len",
         type=int,
-        default=8,
+        default=64,
         help="Number of action steps in the chunk.",
     )
     parser.add_argument(
         "--action-key",
         type=str,
-        default="relative_action",
+        default="action",
         help="Parquet column containing 7D actions.",
     )
     parser.add_argument(
@@ -68,7 +68,7 @@ def parse_args() -> argparse.Namespace:
         dest="dct_keep_dims",
         type=int,
         nargs="+",
-        default=[2, 3, 4],
+        default=[4,6,8],
         help="DCT coefficient counts to keep before inverse reconstruction.",
     )
     parser.add_argument(

@@ -1,0 +1,17 @@
+{
+  "dataset_root": "/16T/liuyuyan/libero/libero_10_no_noops_1.0.0_lerobot",
+  "episode_index": 5,
+  "chunk_start": 10,
+  "chunk_len": 64,
+  "action_key": "action",
+  "dct_keep_dims": [
+    4,
+    6,
+    8
+  ],
+  "plot_backend": "PIL",
+  "show_original": true,
+  "outputs": [
+    "examples/calvin/experiments/dct_action_chunk64_plots/ep000005_start10_all_action_dims_chunk64_dct_4_6_8.png"
+  ]
+}

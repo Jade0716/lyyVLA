@@ -423,11 +423,17 @@ class PolicyNormProcessor:
                 f"for state_keys={self._state_keys}. Full CALVIN robot_obs dim 15 is also accepted."
             )
 
-        data: Dict[str, torch.Tensor] = {}
+        # Feed the transform the same raw numpy representation used by the
+        # training dataloader.  Its first StateActionToTensor stage owns the
+        # numpy -> torch conversion.
+        data: Dict[str, np.ndarray] = {}
         cursor = 0
         for full_key in self._state_keys:
             dim_k = self._state_key_dims.get(full_key, 1)
-            data[full_key] = torch.as_tensor(state[:, cursor : cursor + dim_k], dtype=torch.float32)
+            data[full_key] = np.asarray(
+                state[:, cursor : cursor + dim_k],
+                dtype=np.float32,
+            )
             cursor += dim_k
 
         out = self._transform.apply(data)

@@ -1386,14 +1386,17 @@ class LeRobotSingleDataset(Dataset):
         trajectory_id, base_index = self.all_steps[index]
         raw_data = self.get_step_data(trajectory_id, base_index)
         data = self.transforms(raw_data)
-        return self._pack_sample(data)
+        sample = self._pack_sample(data)
+        return self._attach_state_memory(sample, trajectory_id, base_index)
 
     def _pack_sample(self, data: dict) -> dict:
         """Pack transformed modality data into training sample format."""
         step_images = []
         for video_key in self.modality_keys["video"]:
             image = data[video_key][0]
-            image = Image.fromarray(image).resize((224, 224))
+            # Preserve the decoded dataset resolution here. Each visual encoder
+            # owns its preprocessing and can resize to its required input size.
+            image = Image.fromarray(image)
             step_images.append(image)
 
         language = data[self.modality_keys["language"][0]][0]
@@ -1416,7 +1419,7 @@ class LeRobotSingleDataset(Dataset):
                 frame_views = []
                 for video_key in self.modality_keys["video"]:
                     image = data[video_key][frame_i]
-                    image = Image.fromarray(image).resize((224, 224))
+                    image = Image.fromarray(image)
                     frame_views.append(image)
                 image_sequence.append(frame_views)
             sample["image_sequence"] = image_sequence
@@ -1437,6 +1440,69 @@ class LeRobotSingleDataset(Dataset):
                 state = np.concatenate(state, axis=1).astype(np.float16)
                 sample["state"] = state
 
+        return sample
+
+    def _state_memory_enabled(self) -> bool:
+        return bool(
+            self.data_cfg is not None
+            and self.data_cfg.get("state_memory_training", False)
+        )
+
+    def _get_state_values_at_indices(self, step_indices: np.ndarray) -> np.ndarray:
+        """Load and normalize state vectors at explicit trajectory-local indices."""
+        if not self.modality_keys.get("state"):
+            raise ValueError("state_memory_training=true requires configured state modalities.")
+        if self.curr_traj_data is None:
+            raise RuntimeError("Trajectory data must be loaded before reading state memory.")
+
+        history_data = {}
+        parquet_arrays = {}
+        for state_key in self.modality_keys["state"]:
+            short_key = state_key.replace("state.", "")
+            state_cfg = self.lerobot_modality_meta.state[short_key]
+            parquet_key = state_cfg.original_key or short_key
+            if parquet_key not in parquet_arrays:
+                parquet_arrays[parquet_key] = np.stack(self.curr_traj_data[parquet_key])
+            state_array = parquet_arrays[parquet_key]
+            columns = np.arange(state_cfg.start, state_cfg.end)
+            # Match get_state_or_action/retrieve_data_and_pad, whose output
+            # buffer is float64 before the existing state transforms run.
+            history_data[state_key] = state_array[step_indices][:, columns].astype(
+                np.float64,
+                copy=False,
+            )
+
+        history_data = self.transforms(history_data)
+        parts = [np.asarray(history_data[key]) for key in self.modality_keys["state"]]
+        return np.concatenate(parts, axis=1).astype(np.float16)
+
+    def _attach_state_memory(
+        self,
+        sample: dict,
+        trajectory_id: int,
+        base_index: int,
+    ) -> dict:
+        """Attach causal state history only for the opt-in StateMemory framework."""
+        if not self._state_memory_enabled():
+            return sample
+
+        stride = int(self.data_cfg.get("state_memory_stride", 8))
+        if stride <= 0:
+            raise ValueError(f"state_memory_stride must be positive, got {stride}.")
+
+        # Use the current random start as the local refresh phase:
+        # base=12, stride=8 -> history=[4], not [0, 8].
+        history_indices = np.arange(base_index - stride, -1, -stride, dtype=np.int64)[::-1]
+        window_size = int(self.data_cfg.get("twochunk_window_size", 32))
+        refresh_indices = base_index + np.arange(0, window_size, stride, dtype=np.int64)
+        trajectory_length = int(self.trajectory_lengths[self.get_trajectory_index(trajectory_id)])
+        refresh_indices = np.minimum(refresh_indices, trajectory_length - 1)
+
+        all_indices = np.concatenate([history_indices, refresh_indices])
+        all_states = self._get_state_values_at_indices(all_indices)
+        history_count = history_indices.shape[0]
+        sample["state_history"] = all_states[:history_count]
+        sample["state_memory_sequence"] = all_states[history_count:]
         return sample
 
     def get_step_data(self, trajectory_id: int, base_index: int) -> dict:
@@ -2404,6 +2470,7 @@ class LeRobotMixtureDataset(Dataset):
                 raw_data = dataset.get_step_data(trajectory_id, step)    
                 data = dataset.transforms(raw_data)
                 sample = dataset._pack_sample(data)
+                sample = dataset._attach_state_memory(sample, trajectory_id, step)
                 
                 return sample
                 

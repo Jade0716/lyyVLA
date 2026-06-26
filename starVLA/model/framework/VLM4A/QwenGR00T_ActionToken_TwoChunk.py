@@ -1,16 +1,18 @@
 import time
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
+from scipy.fft import idct
 
 from deployment.model_server.tools.image_tools import to_pil_preserve
 from starVLA.model.framework.VLM4A.QwenGR00T_ActionToken import (
     Qwen_GR00T_ActionToken,
     _as_bool,
 )
-from starVLA.model.modules.action_model.MLP_ActionHeader import L1RegressionActionHead
+from starVLA.model.modules.action_model.MLP_ActionHeader_TwoChunk import L1RegressionActionHead
+from starVLA.model.modules.dino_model.dinov3 import get_twochunk_dino_model
 from starVLA.model.tools import FRAMEWORK_REGISTRY
 from starVLA.training.trainer_utils.trainer_tools import resize_images
 
@@ -18,34 +20,47 @@ from starVLA.training.trainer_utils.trainer_tools import resize_images
 @FRAMEWORK_REGISTRY.register("QwenGR00T_ActionToken_TwoChunk")
 class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
     """
-    Two-chunk GR00T ActionToken variant.
-
-    A slow Qwen pass appends learnable motion queries and returns only those
-    query hidden states. Fast action refreshes bypass the Qwen language model:
-    they extract pre-LLM image embeddings from Qwen inputs, concatenate those
-    image tokens with the cached action-query hidden states, and condition the
-    GR00T DiT on that sequence.
+    Two-chunk ActionToken variant with:
+      - slow chunk: Qwen hidden states from 8 learnable action tokens
+      - DCT head: predict low-frequency coefficients for all action dimensions,
+        including the gripper
+      - fast chunk: DINO tokens fused with the raw slow action-token hidden
+      - action head: regress short-chunk residual actions against (GT - IDCT prior)
     """
 
     def __init__(self, config=None, **kwargs) -> None:
         super().__init__(config=config, **kwargs)
 
         qwenvl_cfg = self.config.framework.get("qwenvl", {})
-        self.language_refresh_steps = int(qwenvl_cfg.get("language_refresh_steps", 16))
+        dino_cfg = self.config.framework.get("dino", {})
+        hidden_size = int(self.qwen_vl_interface.model.config.hidden_size)
+        action_dim = int(self.config.framework.action_model.action_dim)
+
+        self.language_refresh_steps = int(qwenvl_cfg.get("language_refresh_steps", 64))
         self.vision_refresh_steps = int(qwenvl_cfg.get("vision_refresh_steps", self.action_horizon))
         self.fast_chunk_size = self.vision_refresh_steps
         self.twochunk_window_size = int(qwenvl_cfg.get("twochunk_window_size", self.language_refresh_steps))
-        self.motion_dct_keep_freq = int(qwenvl_cfg.get("motion_dct_keep_freq", 4))
+
+        self.motion_dct_keep_freq = int(qwenvl_cfg.get("motion_dct_keep_freq", 8))
         self.motion_dct_chunk_len = int(qwenvl_cfg.get("motion_dct_chunk_len", self.language_refresh_steps))
         self.use_motion_dct_loss = _as_bool(qwenvl_cfg.get("use_motion_dct_loss", True))
         self.motion_dct_loss_weight = float(qwenvl_cfg.get("motion_dct_loss_weight", 1.0))
+        self.detach_idct_condition = _as_bool(qwenvl_cfg.get("detach_idct_condition", True))
+
+        # if self.motion_dct_keep_freq != 8:
+        #     raise ValueError(
+        #         "QwenGR00T_ActionToken_TwoChunk expects framework.qwenvl.motion_dct_keep_freq=8 "
+        #         f"for the requested 8 slow tokens, got {self.motion_dct_keep_freq}."
+        #     )
+
         self.action_model.action_horizon = self.fast_chunk_size
         if hasattr(self.action_model, "config"):
             self.action_model.config.action_horizon = self.fast_chunk_size
 
-        hidden_size = int(self.qwen_vl_interface.model.config.hidden_size)
-        action_dim = int(self.config.framework.action_model.action_dim)
-        self.motion_dct_action_dim = max(action_dim - 1, 1)
+        # TwoChunk uses the coarse IDCT trajectory as an additive prior for the
+        # full action vector. Include gripper so the residual head refines all
+        # dimensions instead of predicting gripper entirely from scratch.
+        self.motion_dct_action_dim = action_dim
         self.action_query_token = nn.Parameter(torch.randn(1, self.motion_dct_keep_freq, hidden_size) * 0.02)
         self.motion_dct_head = None
         if self.use_motion_dct_loss:
@@ -56,135 +71,145 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
                 NUM_ACTIONS_CHUNK=self.motion_dct_keep_freq,
             )
 
+        self.dino_encoder = get_twochunk_dino_model(
+            backbone_name=dino_cfg.get("dino_backbone", "dinov3_vits16plus"),
+            repo_path=dino_cfg.get("dino_repo_path", "/home/liuyuyan/dinov3"),
+            weights_path=dino_cfg.get(
+                "dino_weights_path",
+                "/mnt/8ac36469-5f21-42a9-a6dd-21bfcb724d52/liuyuyan/DINO/"
+                "dinov3_vits16plus_pretrain_lvd1689m-4057cbaa.pth",
+            ),
+            input_size=int(dino_cfg.get("dino_input_size", 256)),
+        )
+        self.dino_pro = nn.Linear(
+            in_features=self.dino_encoder.num_channels,
+            out_features=hidden_size,
+        )
+        self.action_model = L1RegressionActionHead(
+            input_dim=hidden_size,
+            hidden_dim=int(self.config.framework.action_model.hidden_size),
+            action_dim=action_dim,
+            NUM_ACTIONS_CHUNK=self.fast_chunk_size,
+        )
+        self.l1_loss = nn.L1Loss()
+
         self._cached_action_token_hidden = None
+        self._cached_coarse_action = None
         self._cached_instruction_key = None
         self._cached_batch_size = None
         self._predict_call_count = 0
 
-    def _token_id(self, attr: str, fallback: int | None = None) -> int | None:
-        return getattr(self.qwen_vl_interface.model.config, attr, fallback)
+        self._refresh_idct_basis(chunk_len=self.motion_dct_chunk_len)
 
-    @staticmethod
-    def _cat_feature_output(features) -> torch.Tensor:
-        if hasattr(features, "pooler_output"):
-            features = features.pooler_output
-        if isinstance(features, (list, tuple)):
-            return torch.cat(list(features), dim=0)
-        return features
+    def _refresh_idct_basis(self, chunk_len: int) -> None:
+        basis_key = f"_idct_basis_{chunk_len}_{self.motion_dct_keep_freq}"
+        if hasattr(self, basis_key):
+            self._active_idct_basis_name = basis_key
+            return
 
-    def _call_image_features(self, qwen_inputs: dict):
-        model = self.qwen_vl_interface.model
-        kwargs = {
-            "pixel_values": qwen_inputs["pixel_values"],
-            "image_grid_thw": qwen_inputs.get("image_grid_thw", None),
-        }
-        try:
-            return model.get_image_features(**kwargs, return_dict=True)
-        except TypeError:
-            return model.get_image_features(**kwargs)
+        coeff_eye = np.zeros((self.motion_dct_keep_freq, chunk_len), dtype=np.float32)
+        coeff_eye[:, : self.motion_dct_keep_freq] = np.eye(self.motion_dct_keep_freq, dtype=np.float32)
+        basis = idct(coeff_eye, type=2, n=chunk_len, axis=1, norm="ortho").T
+        self.register_buffer(basis_key, torch.from_numpy(basis), persistent=False)
+        self._active_idct_basis_name = basis_key
 
-    def _call_video_features(self, qwen_inputs: dict):
-        model = self.qwen_vl_interface.model
-        kwargs = {
-            "pixel_values_videos": qwen_inputs["pixel_values_videos"],
-            "video_grid_thw": qwen_inputs.get("video_grid_thw", None),
-        }
-        try:
-            return model.get_video_features(**kwargs, return_dict=True)
-        except TypeError:
-            return model.get_video_features(**kwargs)
+    def _idct_basis(self, chunk_len: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        self._refresh_idct_basis(chunk_len)
+        return getattr(self, self._active_idct_basis_name).to(device=device, dtype=dtype)
 
-    @staticmethod
-    def _pack_masked_tokens(inputs_embeds: torch.Tensor, token_mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        pieces = [inputs_embeds[i][token_mask[i]] for i in range(inputs_embeds.shape[0])]
-        max_len = max(max(piece.shape[0], 1) for piece in pieces)
-        out = inputs_embeds.new_zeros((inputs_embeds.shape[0], max_len, inputs_embeds.shape[-1]))
-        out_mask = torch.zeros((inputs_embeds.shape[0], max_len), dtype=torch.bool, device=inputs_embeds.device)
-        for i, piece in enumerate(pieces):
-            if piece.numel() == 0:
-                continue
-            out[i, : piece.shape[0]] = piece
-            out_mask[i, : piece.shape[0]] = True
-        return out, out_mask
+    def _predict_low_dct(self, action_token_hidden: torch.Tensor) -> torch.Tensor:
+        if self.motion_dct_head is None:
+            raise RuntimeError("QwenGR00T_ActionToken_TwoChunk requires use_motion_dct_loss=true.")
+        return self.motion_dct_head(action_token_hidden)
 
-    def _extract_image_embeds_from_inputs(self, qwen_inputs: dict) -> Tuple[torch.Tensor, torch.Tensor]:
-        model = self.qwen_vl_interface.model
-        input_ids = qwen_inputs["input_ids"]
-        inputs_embeds = model.get_input_embeddings()(input_ids)
-        image_token_mask = torch.zeros_like(input_ids, dtype=torch.bool)
+    def _predict_coarse_action(self, action_token_hidden: torch.Tensor, chunk_len: int) -> torch.Tensor:
+        low_dct_pred = self._predict_low_dct(action_token_hidden)
+        basis = self._idct_basis(chunk_len=chunk_len, device=low_dct_pred.device, dtype=low_dct_pred.dtype)
+        coarse_action = torch.einsum("bkd,tk->btd", low_dct_pred, basis)
+        return coarse_action
 
-        image_token_id = self._token_id("image_token_id")
-        if qwen_inputs.get("pixel_values", None) is not None and image_token_id is not None:
-            image_features = self._cat_feature_output(self._call_image_features(qwen_inputs))
-            image_features = image_features.to(device=inputs_embeds.device, dtype=inputs_embeds.dtype)
-            current_mask = input_ids == int(image_token_id)
-            inputs_embeds = inputs_embeds.masked_scatter(
-                current_mask.unsqueeze(-1).expand_as(inputs_embeds),
-                image_features,
-            )
-            image_token_mask |= current_mask
+    def _coarse_with_gripper_pad(
+        self,
+        coarse_action: torch.Tensor,
+        action_dim: int,
+    ) -> torch.Tensor:
+        if coarse_action.shape[-1] == action_dim:
+            return coarse_action
+        padded = coarse_action.new_zeros(coarse_action.shape[0], coarse_action.shape[1], action_dim)
+        padded[:, :, : coarse_action.shape[-1]] = coarse_action
+        return padded
 
-        video_token_id = self._token_id("video_token_id")
-        if qwen_inputs.get("pixel_values_videos", None) is not None and video_token_id is not None:
-            video_features = self._cat_feature_output(self._call_video_features(qwen_inputs))
-            video_features = video_features.to(device=inputs_embeds.device, dtype=inputs_embeds.dtype)
-            current_mask = input_ids == int(video_token_id)
-            inputs_embeds = inputs_embeds.masked_scatter(
-                current_mask.unsqueeze(-1).expand_as(inputs_embeds),
-                video_features,
-            )
-            image_token_mask |= current_mask
+    def _action_loss_weight(self, train_step=None) -> float:
+        if not self.config or not hasattr(self.config, "trainer"):
+            return 1.0
+        if not _as_bool(self.config.trainer.get("action_dit_loss_warmup", False)):
+            return 1.0
+        if train_step is None:
+            return 1.0
 
-        return self._pack_masked_tokens(inputs_embeds, image_token_mask)
+        start_step = int(self.config.trainer.get("action_dit_loss_start_step", 0))
+        warmup_steps = int(self.config.trainer.get("action_dit_loss_warmup_steps", 0))
+        if train_step < start_step:
+            return 0.0
+        if warmup_steps <= 0:
+            return 1.0
+        progress = float(train_step - start_step) / float(warmup_steps)
+        return min(1.0, max(0.0, progress))
 
     def _encode_action_token_hidden(
         self,
         batch_images: List,
         instructions: List[str],
+        qwen_inputs: dict | None = None,
     ) -> torch.Tensor:
-        qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(images=batch_images, instructions=instructions)
+        if qwen_inputs is None:
+            qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(
+                images=batch_images,
+                instructions=instructions,
+            )
         qwen_inputs = self._append_action_query(qwen_inputs)
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            qwenvl_outputs = self.qwen_vl_interface(
+            # ActionToken only consumes the multimodal backbone hidden state.
+            # Calling ForConditionalGeneration would additionally project every
+            # sequence token through the large vocabulary lm_head, even though
+            # those logits are discarded.
+            qwenvl_outputs = self.qwen_vl_interface.model.model(
                 **qwen_inputs,
                 output_attentions=False,
-                output_hidden_states=True,
+                output_hidden_states=False,
                 return_dict=True,
+                use_cache=False,
             )
-            return qwenvl_outputs.hidden_states[-1][:, -self.motion_dct_keep_freq :, :]
+            return qwenvl_outputs.last_hidden_state[:, -self.motion_dct_keep_freq :, :]
+
+    def _encode_dino_hidden_states(
+        self,
+        batch_images: List,
+        dtype: torch.dtype,
+        image_tensors: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if image_tensors is None:
+            image_tensors = self.dino_encoder.prepare_dino_input(batch_images)
+        batch_size = len(batch_images)
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            dino_features = self.dino_encoder(image_tensors)
+            dino_features = dino_features.reshape(batch_size, -1, dino_features.shape[-1])
+            dino_hidden = self.dino_pro(dino_features)
+        return dino_hidden.to(dtype=dtype)
 
     def _build_action_condition(
         self,
         action_token_hidden: torch.Tensor,
         frame_images: List,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        instructions = [""] * len(frame_images)
-        qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(images=frame_images, instructions=instructions)
-        image_embeds, image_mask = self._extract_image_embeds_from_inputs(qwen_inputs)
-
-        action_token_hidden = action_token_hidden.to(device=image_embeds.device, dtype=image_embeds.dtype)
-        attention_mask = torch.cat(
-            [
-                torch.ones(
-                    action_token_hidden.shape[0],
-                    action_token_hidden.shape[1],
-                    dtype=torch.bool,
-                    device=action_token_hidden.device,
-                ),
-                image_mask,
-            ],
-            dim=1,
-        )
-        return torch.cat([action_token_hidden, image_embeds], dim=1), attention_mask
-
-    def _flatten_big_chunk_images(self, image_sequences: List[List], num_refreshes: int) -> List[List]:
-        big_chunk_images = []
-        for image_sequence in image_sequences:
-            images = []
-            for refresh_images in image_sequence[:num_refreshes]:
-                images.extend(refresh_images)
-            big_chunk_images.append(images)
-        return big_chunk_images
+        dino_image_tensors: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        dino_hidden = self._encode_dino_hidden_states(
+            batch_images=frame_images,
+            dtype=action_token_hidden.dtype,
+            image_tensors=dino_image_tensors,
+        ).to(device=action_token_hidden.device)
+        condition_hidden = torch.cat([action_token_hidden, dino_hidden], dim=1)
+        return condition_hidden
 
     @staticmethod
     def _first_refresh_images(image_sequences: List[List]) -> List[List]:
@@ -197,12 +222,12 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         return to_pil_preserve(images)
 
     def _valid_training_refreshes(self, image_sequences: List[List], actions: torch.Tensor) -> int:
-        max_refreshes = max(1, self.twochunk_window_size // max(self.vision_refresh_steps, 1))
+        max_refreshes = max(1, min(self.twochunk_window_size, self.motion_dct_chunk_len) // max(self.vision_refresh_steps, 1))
         num_refreshes = min(min(len(seq) for seq in image_sequences), max_refreshes)
         while num_refreshes > 0:
             start = (num_refreshes - 1) * self.vision_refresh_steps
             end = start + self.fast_chunk_size
-            if end <= actions.shape[1]:
+            if end <= min(actions.shape[1], self.motion_dct_chunk_len):
                 return num_refreshes
             num_refreshes -= 1
         return 0
@@ -229,53 +254,64 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
             raise ValueError(
                 "TwoChunk forward received no valid action chunks. "
                 f"actions.shape={tuple(actions.shape)}, fast_chunk_size={self.fast_chunk_size}, "
-                f"vision_refresh_steps={self.vision_refresh_steps}"
+                f"vision_refresh_steps={self.vision_refresh_steps}, motion_dct_chunk_len={self.motion_dct_chunk_len}"
             )
 
         first_frame_images = self._first_refresh_images(image_sequences)
         action_token_hidden = self._encode_action_token_hidden(first_frame_images, instructions)
 
-        # Auxiliary low-frequency supervision: each slow motion token predicts
-        # one DCT frequency for the non-gripper action dimensions.
-        motion_chunk_len = min(self.motion_dct_chunk_len, num_refreshes * self.vision_refresh_steps, actions.shape[1])
-        motion_dct_loss = self._compute_motion_dct_loss(action_token_hidden, actions, motion_chunk_len)
+        long_chunk_len = min(self.motion_dct_chunk_len, actions.shape[1])
+        motion_dct_loss = self._compute_motion_dct_loss(action_token_hidden, actions, long_chunk_len)
         weighted_motion_dct_loss = self.motion_dct_loss_weight * motion_dct_loss
+        action_loss_weight = self._action_loss_weight(kwargs.get("train_step", None))
+
+        coarse_long_action = self._predict_coarse_action(action_token_hidden, long_chunk_len)
+        if self.detach_idct_condition:
+            coarse_long_action = coarse_long_action.detach()
+        coarse_long_action = self._coarse_with_gripper_pad(coarse_long_action, action_dim=actions.shape[-1])
 
         flat_frame_images = []
-        action_chunks = []
+        residual_action_targets = []
         for refresh_i in range(num_refreshes):
             start = refresh_i * self.vision_refresh_steps
             end = start + self.fast_chunk_size
             flat_frame_images.extend([image_sequence[refresh_i] for image_sequence in image_sequences])
-            action_chunks.append(actions[:, start:end, :])
+            residual_action_targets.append(actions[:, start:end, :] - coarse_long_action[:, start:end, :])
 
-        # Fast DiT condition: repeat the slow motion-token hidden states for every
-        # 4-step refresh, then concatenate it with that refresh's image embeds.
         flat_action_token_hidden = action_token_hidden.repeat(num_refreshes, 1, 1)
-        encoder_hidden, encoder_attention_mask = self._build_action_condition(
-            flat_action_token_hidden,
-            flat_frame_images,
+        fused_hidden = self._build_action_condition(flat_action_token_hidden, flat_frame_images)
+        residual_action_targets = torch.cat(residual_action_targets, dim=0).to(
+            device=fused_hidden.device,
+            dtype=fused_hidden.dtype,
         )
-        actions_target = torch.cat(action_chunks, dim=0).to(device=encoder_hidden.device, dtype=encoder_hidden.dtype)
-
-        if self.config and hasattr(self.config, "trainer"):
-            repeated_diffusion_steps = int(self.config.trainer.get("repeated_diffusion_steps", 16))
 
         with torch.autocast("cuda", dtype=torch.float32):
-            action_loss = self.action_model(
-                encoder_hidden.repeat(repeated_diffusion_steps, 1, 1),
-                actions_target.repeat(repeated_diffusion_steps, 1, 1),
-                None,
-                encoder_attention_mask=encoder_attention_mask.repeat(repeated_diffusion_steps, 1),
-            )
+            pred_residual_actions = self.action_model.predict_action(fused_hidden)
+            action_loss = self.l1_loss(pred_residual_actions, residual_action_targets)
 
-        total_loss = action_loss + weighted_motion_dct_loss
-        return {
+        total_loss = action_loss_weight * action_loss + weighted_motion_dct_loss
+        output = {
             "action_loss": total_loss,
             "action_dit_loss": action_loss,
+            "action_dit_loss_weight": action_loss_weight,
             "motion_dct_loss": motion_dct_loss,
             "weighted_motion_dct_loss": weighted_motion_dct_loss,
         }
+        if kwargs.get("log_actiontoken_grad_norm", False):
+            output.update(
+                {
+                    "grad_norm/action_token/action_dit_loss": self._grad_norm_wrt_hidden(
+                        action_loss, action_token_hidden
+                    ),
+                    "grad_norm/action_token/motion_dct_loss": self._grad_norm_wrt_hidden(
+                        motion_dct_loss, action_token_hidden
+                    ),
+                    "grad_norm/action_token/weighted_motion_dct_loss": self._grad_norm_wrt_hidden(
+                        weighted_motion_dct_loss, action_token_hidden
+                    ),
+                }
+            )
+        return output
 
     def _should_refresh_action_token(self, instructions: List[str], batch_size: int) -> bool:
         if self._cached_action_token_hidden is None:
@@ -290,6 +326,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
 
     def _reset_predict_cache(self) -> None:
         self._cached_action_token_hidden = None
+        self._cached_coarse_action = None
         self._cached_instruction_key = None
         self._cached_batch_size = None
         self._predict_call_count = 0
@@ -327,28 +364,50 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         slow_refresh = self._should_refresh_action_token(instructions, batch_size)
         slow_time_s = 0.0
         if slow_refresh:
+            # Match VLA-Adapter: processor/tokenization is preprocessing and is
+            # excluded from synchronized model inference time.
+            qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(
+                images=batch_images,
+                instructions=instructions,
+            )
             self._sync_cuda_if_needed()
             slow_start = time.perf_counter()
-            self._cached_action_token_hidden = self._encode_action_token_hidden(batch_images, instructions).detach()
-            self._sync_cuda_if_needed()
-            slow_time_s = time.perf_counter() - slow_start
+            self._cached_action_token_hidden = self._encode_action_token_hidden(
+                batch_images,
+                instructions,
+                qwen_inputs=qwen_inputs,
+            ).detach()
+            self._cached_coarse_action = self._predict_coarse_action(
+                self._cached_action_token_hidden,
+                self.motion_dct_chunk_len,
+            ).detach()
             self._cached_instruction_key = tuple(instructions)
             self._cached_batch_size = batch_size
             self._predict_call_count = 0
+            self._sync_cuda_if_needed()
+            slow_time_s = time.perf_counter() - slow_start
 
+        start = self._predict_call_count * self.fast_chunk_size
+        end = start + self.fast_chunk_size
+        if end > self.motion_dct_chunk_len:
+            self._predict_call_count = 0
+            start = 0
+            end = self.fast_chunk_size
+
+        # DINO image tensor construction is preprocessing; keep it outside the
+        # model-only interval just like the VLA-Adapter image processor.
+        dino_image_tensors = self.dino_encoder.prepare_dino_input(batch_images)
         self._sync_cuda_if_needed()
         fast_start = time.perf_counter()
-        encoder_hidden, encoder_attention_mask = self._build_action_condition(
+        fused_hidden = self._build_action_condition(
             self._cached_action_token_hidden,
             batch_images,
+            dino_image_tensors=dino_image_tensors,
         )
-
         with torch.autocast("cuda", dtype=torch.float32):
-            pred_actions = self.action_model.predict_action(
-                encoder_hidden,
-                None,
-                encoder_attention_mask=encoder_attention_mask.to(dtype=torch.bool),
-            )
+            pred_residual_actions = self.action_model.predict_action(fused_hidden)
+        coarse_action = self._coarse_with_gripper_pad(self._cached_coarse_action, pred_residual_actions.shape[-1])
+        pred_actions = pred_residual_actions + coarse_action[:, start:end, :]
         self._sync_cuda_if_needed()
         fast_time_s = time.perf_counter() - fast_start
 
@@ -363,20 +422,32 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
                 f"predict_call_count={self._predict_call_count}; "
                 f"slow_time={slow_time_s:.4f}s; "
                 f"fast_time={fast_time_s:.4f}s; "
-                f"encoder_hidden_shape={tuple(encoder_hidden.shape)}; "
+                f"fused_hidden_shape={tuple(fused_hidden.shape)}; "
                 f"action_shape={tuple(pred_actions.shape)}"
             )
-        normalized_actions = pred_actions.detach().cpu().numpy()
-        return {"normalized_actions": normalized_actions}
+        normalized_actions = pred_actions.detach().float().cpu().numpy()
+        return {
+            "normalized_actions": normalized_actions,
+            "inference_timing": {
+                "slow_refresh": slow_refresh,
+                "slow_time_s": slow_time_s,
+                "fast_time_s": fast_time_s,
+                "model_inference_time_s": slow_time_s + fast_time_s,
+                "timing_scope": "model_only_after_preprocess",
+                "fast_chunk_size": self.fast_chunk_size,
+                "language_refresh_steps": self.language_refresh_steps,
+                "vision_refresh_steps": self.vision_refresh_steps,
+            },
+        }
 
     def _valid_prediction_refreshes(self, image_sequences: List[List], examples: List[dict]) -> int:
-        max_refreshes = max(1, self.twochunk_window_size // max(self.vision_refresh_steps, 1))
+        max_refreshes = max(1, min(self.twochunk_window_size, self.motion_dct_chunk_len) // max(self.vision_refresh_steps, 1))
         num_refreshes = min(min(len(seq) for seq in image_sequences), max_refreshes)
         if examples and "action" in examples[0]:
             action_len = min(np.asarray(example["action"]).shape[0] for example in examples)
             while num_refreshes > 0:
                 end = (num_refreshes - 1) * self.vision_refresh_steps + self.fast_chunk_size
-                if end <= action_len:
+                if end <= min(action_len, self.motion_dct_chunk_len):
                     return num_refreshes
                 num_refreshes -= 1
             return 0
@@ -399,31 +470,37 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         if num_refreshes == 0:
             raise ValueError(
                 "TwoChunk predict_action received no valid action windows. "
-                f"fast_chunk_size={self.fast_chunk_size}, vision_refresh_steps={self.vision_refresh_steps}"
+                f"fast_chunk_size={self.fast_chunk_size}, vision_refresh_steps={self.vision_refresh_steps}, "
+                f"motion_dct_chunk_len={self.motion_dct_chunk_len}"
             )
 
         first_frame_images = self._first_refresh_images(image_sequences)
         action_token_hidden = self._encode_action_token_hidden(first_frame_images, instructions)
+        coarse_long_action = self._coarse_with_gripper_pad(
+            self._predict_coarse_action(action_token_hidden, self.motion_dct_chunk_len),
+            action_dim=int(self.config.framework.action_model.action_dim),
+        )
 
         flat_frame_images = []
         for refresh_i in range(num_refreshes):
             flat_frame_images.extend([image_sequence[refresh_i] for image_sequence in image_sequences])
 
         flat_action_token_hidden = action_token_hidden.repeat(num_refreshes, 1, 1)
-        encoder_hidden, encoder_attention_mask = self._build_action_condition(
-            flat_action_token_hidden,
-            flat_frame_images,
-        )
-
-        with torch.autocast("cuda", dtype=torch.float32):
-            pred_actions = self.action_model.predict_action(
-                encoder_hidden,
-                None,
-                encoder_attention_mask=encoder_attention_mask.to(dtype=torch.bool),
-            )
+        fused_hidden = self._build_action_condition(flat_action_token_hidden, flat_frame_images)
+        pred_residual_actions = self.action_model.predict_action(fused_hidden)
 
         batch_size = len(examples)
-        pred_actions = pred_actions.view(num_refreshes, batch_size, self.fast_chunk_size, -1)
-        pred_actions = pred_actions.permute(1, 0, 2, 3).reshape(batch_size, num_refreshes * self.fast_chunk_size, -1)
-        normalized_actions = pred_actions.detach().cpu().numpy()
+        pred_residual_actions = pred_residual_actions.view(num_refreshes, batch_size, self.fast_chunk_size, -1)
+        pred_residual_actions = pred_residual_actions.permute(1, 0, 2, 3)
+
+        coarse_chunks = []
+        for refresh_i in range(num_refreshes):
+            start = refresh_i * self.vision_refresh_steps
+            end = start + self.fast_chunk_size
+            coarse_chunks.append(coarse_long_action[:, start:end, :])
+        coarse_chunks = torch.stack(coarse_chunks, dim=1)
+
+        pred_actions = pred_residual_actions + coarse_chunks
+        pred_actions = pred_actions.reshape(batch_size, num_refreshes * self.fast_chunk_size, -1)
+        normalized_actions = pred_actions.detach().float().cpu().numpy()
         return {"normalized_actions": normalized_actions}

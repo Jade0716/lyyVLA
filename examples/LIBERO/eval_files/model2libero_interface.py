@@ -15,7 +15,6 @@ ensembling, gripper sticky logic, and chunk-cache scheduling.
 """
 
 from collections import deque
-import time
 from typing import Optional, Sequence
 
 import matplotlib.pyplot as plt
@@ -38,6 +37,7 @@ class ModelClient:
         adaptive_ensemble_alpha: float = 0.1,
         host: str = "0.0.0.0",
         port: int = 10095,
+        inference_warmup_steps: int = 10,
     ) -> None:
         # Connect & receive handshake metadata (action_chunk_size, etc.)
         self.client = WebsocketClientPolicy(host, port)
@@ -83,6 +83,19 @@ class ModelClient:
         self.raw_actions: Optional[np.ndarray] = None
         self.predict_action_time_total_s = 0.0
         self.predict_action_time_count = 0
+        self.inference_call_count = 0
+        self.inference_warmup_steps = int(inference_warmup_steps)
+
+    def _record_server_inference_time(self, response: dict) -> bool:
+        """Record server-reported synchronized model-only inference latency."""
+        self.inference_call_count += 1
+        timing = response.get("data", {}).get("inference_timing", {})
+        model_time_s = float(timing.get("model_inference_time_s", 0.0) or 0.0)
+        if self.inference_call_count <= self.inference_warmup_steps or model_time_s <= 0.0:
+            return False
+        self.predict_action_time_total_s += model_time_s
+        self.predict_action_time_count += 1
+        return True
 
     def _add_image_to_history(self, image: np.ndarray) -> None:
         self.image_history.append(image)
@@ -114,6 +127,9 @@ class ModelClient:
             "total_predict_action_chunk_time_s": self.predict_action_time_total_s,
             "predict_action_chunk_count": self.predict_action_time_count,
             "action_chunk_size": self.action_chunk_size,
+            "inference_warmup_steps": self.inference_warmup_steps,
+            "inference_calls_including_warmup": self.inference_call_count,
+            "inference_timing_scope": "server_model_only_after_preprocess",
         }
 
     def step(self, example: dict, step: int = 0, **kwargs) -> dict:
@@ -141,11 +157,8 @@ class ModelClient:
                 "use_ddim": self.use_ddim,
                 "num_ddim_steps": self.num_ddim_steps,
             }
-            inference_start = time.perf_counter()
             response = self.client.predict_action(vla_input)
-            inference_time_s = time.perf_counter() - inference_start
-            self.predict_action_time_total_s += inference_time_s
-            self.predict_action_time_count += 1
+            self._record_server_inference_time(response)
             try:
                 actions_batch = response["data"]["actions"]  # (B, T, D), unnormalized server-side
             except KeyError:

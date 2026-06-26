@@ -62,6 +62,13 @@ def build_framework(cfg): # The single entry point for building different model 
     _auto_import_framework_modules()
 
     framework_id = cfg.framework.name
+    if framework_id == "QwenGR00T_ActionToken_TwoChunk":
+        dino_cfg = cfg.framework.get("dino", {})
+        qwenvl_cfg = cfg.framework.get("qwenvl", {})
+        dino_backbone = str(dino_cfg.get("dino_backbone", ""))
+        include_gripper = bool(qwenvl_cfg.get("motion_dct_include_gripper", False))
+        if dino_backbone.startswith("dinov2_") and not include_gripper:
+            framework_id = "QwenGR00T_ActionToken_TwoChunk_back"
     if framework_id not in FRAMEWORK_REGISTRY._registry:
         available = sorted(FRAMEWORK_REGISTRY._registry.keys())
         raise NotImplementedError(
@@ -266,4 +273,3 @@ class baseframework(PreTrainedModel):
         # **ensure model is on GPU**
         FrameworkModel = FrameworkModel
         return FrameworkModel
-

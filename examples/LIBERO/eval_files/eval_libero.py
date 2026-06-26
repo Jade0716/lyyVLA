@@ -4,7 +4,7 @@ import logging
 import math
 import os
 import pathlib
-import time
+import re
 
 import imageio
 import numpy as np
@@ -15,6 +15,7 @@ from libero.libero.envs import OffScreenRenderEnv
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 from examples.LIBERO.eval_files.model2libero_interface import ModelClient
+from examples.LIBERO.eval_files.model2libero_twochunk_interface import TwoChunkModelClient
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
@@ -46,6 +47,7 @@ class Args:
     # Utils
     #################################################################################################################
     video_out_path: str = "experiments/libero/logs"  # Path to save videos
+    eval_log_dir: str = "/tmp/libero/eval_logs"  # Path to save final eval result JSON files
 
     seed: int = 7  # Random Seed (for reproducibility)
 
@@ -57,6 +59,58 @@ class Args:
     post_process_action: bool = True
 
     job_name: str = "test"
+    twochunk: bool = False
+    twochunk_debug: bool = False
+    twochunk_debug_every_step: bool = False
+    twochunk_short_chunks_per_long_window: int = 8
+    inference_warmup_steps: int = 10
+
+
+def _sanitize_filename(name: str) -> str:
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._-")
+    return name or "libero_eval"
+
+
+def _model_result_name(pretrained_path: str, job_name: str) -> str:
+    if not pretrained_path:
+        return _sanitize_filename(job_name)
+
+    ckpt_path = pathlib.Path(pretrained_path)
+    ckpt_stem = ckpt_path.stem
+    if ckpt_stem.endswith("_pytorch_model"):
+        ckpt_stem = ckpt_stem[: -len("_pytorch_model")]
+
+    parts = ckpt_path.parts
+    if "checkpoints" in parts:
+        ckpt_idx = parts.index("checkpoints")
+        if ckpt_idx > 0:
+            return _sanitize_filename(f"{parts[ckpt_idx - 1]}_{ckpt_stem}")
+
+    return _sanitize_filename(f"{ckpt_path.parent.name}_{ckpt_stem}")
+
+
+def _inference_stats_with_per_action(client_model: ModelClient) -> dict:
+    stats = client_model.get_inference_stats() if hasattr(client_model, "get_inference_stats") else {}
+    if not stats:
+        return {}
+
+    action_chunk_size = int(stats.get("action_chunk_size", 0) or 0)
+    avg_chunk_time_s = float(stats.get("avg_model_inference_time_s", 0.0) or 0.0)
+    avg_action_time_s = avg_chunk_time_s / action_chunk_size if action_chunk_size > 0 else 0.0
+    return {
+        **stats,
+        "avg_model_inference_time_per_action_s": avg_action_time_s,
+        "avg_predict_action_time_per_action_s": avg_action_time_s,
+    }
+
+
+def _save_eval_results(args: Args, result_data: dict) -> pathlib.Path:
+    eval_log_dir = pathlib.Path(args.eval_log_dir)
+    eval_log_dir.mkdir(parents=True, exist_ok=True)
+    result_path = eval_log_dir / f"{_model_result_name(args.pretrained_path, args.job_name)}.json"
+    with open(result_path, "w", encoding="utf-8") as f:
+        json.dump(result_data, f, indent=2)
+    return result_path
 
 
 def eval_libero(args: Args) -> None:
@@ -88,10 +142,21 @@ def eval_libero(args: Args) -> None:
     else:
         raise ValueError(f"Unknown task suite: {args.task_suite_name}")
 
-    client_model = ModelClient(
+    client_cls = TwoChunkModelClient if args.twochunk else ModelClient
+    client_model = client_cls(
         host=args.host,
         port=args.port,
         unnorm_key=args.unnorm_key,
+        inference_warmup_steps=args.inference_warmup_steps,
+        **(
+            {
+                "twochunk_debug": args.twochunk_debug,
+                "twochunk_debug_every_step": args.twochunk_debug_every_step,
+                "twochunk_short_chunks_per_long_window": args.twochunk_short_chunks_per_long_window,
+            }
+            if args.twochunk
+            else {}
+        ),
     )
 
     # Optional smoke-test cap (still useful for quick verification with -1 = full run).
@@ -100,6 +165,7 @@ def eval_libero(args: Args) -> None:
 
     # Start evaluation
     total_episodes, total_successes = 0, 0
+    task_results = []
     for task_id in tqdm.tqdm(range(n_eval_tasks)):
         # Get task
         task = task_suite.get_task(task_id)
@@ -112,6 +178,7 @@ def eval_libero(args: Args) -> None:
 
         # Start episodes
         task_episodes, task_successes = 0, 0
+        episode_results = []
         for episode_idx in tqdm.tqdm(range(args.num_trials_per_task)):
             logging.info(f"\nTask: {task_description}")
 
@@ -175,12 +242,7 @@ def eval_libero(args: Args) -> None:
                     # normalization and clips the result to [-1, 1].
                     example_dict["state"] = observation["observation.state"]
 
-                start_time = time.time()
-
                 response = client_model.step(example=example_dict, step=step)
-
-                end_time = time.time()
-                # print(f"time: {end_time - start_time}")
 
                 # #
                 raw_action = response["raw_action"]
@@ -221,27 +283,85 @@ def eval_libero(args: Args) -> None:
             # Save a replay video of the episode
             suffix = "success" if done else "failure"
             task_segment = task_description.replace(" ", "_")
+            video_path = pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4"
             imageio.mimwrite(
-                pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4",
+                video_path,
                 [np.asarray(x) for x in replay_images],
                 fps=10,
             )
 
             full_actions = np.stack(full_actions)
             # np.save(pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.npy", full_actions)
+            policy_steps = int(len(full_actions))
 
             # print(pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4")
             # Log current results
             logging.info(f"Success: {done}")
             logging.info(f"# episodes completed so far: {total_episodes}")
             logging.info(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
+            episode_results.append(
+                {
+                    "episode_idx": int(episode_idx),
+                    "success": bool(done),
+                    "env_steps": int(args.num_steps_wait + policy_steps),
+                    "policy_steps": policy_steps,
+                    "video_path": str(video_path),
+                }
+            )
 
         # Log final results
-        logging.info(f"Current task success rate: {float(task_successes) / float(task_episodes)}")
-        logging.info(f"Current total success rate: {float(total_successes) / float(total_episodes)}")
+        task_success_rate = float(task_successes) / float(task_episodes) if task_episodes else 0.0
+        total_success_rate = float(total_successes) / float(total_episodes) if total_episodes else 0.0
+        logging.info(f"Current task success rate: {task_success_rate}")
+        logging.info(f"Current total success rate: {total_success_rate}")
+        task_results.append(
+            {
+                "task_id": int(task_id),
+                "task_description": task_description,
+                "episodes": int(task_episodes),
+                "successes": int(task_successes),
+                "success_rate": task_success_rate,
+                "episode_results": episode_results,
+            }
+        )
 
-    logging.info(f"Total success rate: {float(total_successes) / float(total_episodes)}")
+    final_success_rate = float(total_successes) / float(total_episodes) if total_episodes else 0.0
+    inference_stats = _inference_stats_with_per_action(client_model)
+    result_data = {
+        "pretrained_path": args.pretrained_path,
+        "task_suite_name": args.task_suite_name,
+        "num_tasks_in_suite": int(num_tasks_in_suite),
+        "num_eval_tasks": int(n_eval_tasks),
+        "num_trials_per_task": int(args.num_trials_per_task),
+        "seed": int(args.seed),
+        "video_out_path": args.video_out_path,
+        "total_episodes": int(total_episodes),
+        "total_successes": int(total_successes),
+        "total_success_rate": final_success_rate,
+        "inference_stats": inference_stats,
+        "task_results": task_results,
+    }
+    result_path = _save_eval_results(args, result_data)
+
+    logging.info(f"Total success rate: {final_success_rate}")
     logging.info(f"Total episodes: {total_episodes}")
+    logging.info(f"Eval results saved at {result_path}")
+    if inference_stats:
+        logging.info(
+            "Average model inference time: "
+            f"{inference_stats['avg_model_inference_time_s']:.4f}s/chunk, "
+            f"{inference_stats['avg_model_inference_time_per_action_s']:.4f}s/action "
+            f"(chunk_size={inference_stats['action_chunk_size']}, "
+            f"chunk_calls={inference_stats['model_inference_time_count']})"
+        )
+        if "avg_32step_inference_time_s" in inference_stats:
+            logging.info(
+                "TwoChunk 32-step model inference time: "
+                f"{inference_stats['avg_32step_inference_time_s']:.4f}s "
+                f"(long_avg={inference_stats['avg_long_chunk_inference_time_s']:.4f}s + "
+                f"{inference_stats['twochunk_short_chunks_per_32_steps']} * "
+                f"short_avg={inference_stats['avg_short_chunk_inference_time_s']:.4f}s)"
+            )
 
 
 def _get_libero_env(task, resolution, seed):

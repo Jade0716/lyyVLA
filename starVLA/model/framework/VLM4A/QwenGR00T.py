@@ -269,7 +269,7 @@ class Qwen_GR00T(baseframework):
                 last_hidden, state, encoder_attention_mask=backbone_attention_mask
             )  # (B, chunk_len, action_dim)
 
-        normalized_actions = pred_actions.detach().cpu().numpy()
+        normalized_actions = pred_actions.detach().float().cpu().numpy()
         return {"normalized_actions": normalized_actions}
 
 

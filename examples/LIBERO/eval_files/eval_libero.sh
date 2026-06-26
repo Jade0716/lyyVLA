@@ -4,11 +4,12 @@ set -euo pipefail
 STARVLA_DIR="${STARVLA_DIR:-$(cd "$(dirname "$0")/../../.." && pwd)}"
 LIBERO_HOME="${LIBERO_HOME:-/home/liuyuyan/LIBERO}"
 LIBERO_PYTHON="${LIBERO_PYTHON:-python}"
-CKPT="${CKPT:-/16T/liuyuyan/lyyvla/results/Checkpoints/liberoall_qwen3.5-0.8b-actiontoken-20260602_115655/checkpoints/steps_30000_pytorch_model.pt}"
+CKPT="${CKPT:-/16T/liuyuyan/lyyvla/results/Checkpoints/liberoall_qwen3.5-0.8b-actiontoken-20260624_153924/checkpoints/steps_50000_pytorch_model.pt}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-6694}"
 TASK_SUITE_NAME="${TASK_SUITE_NAME:-libero_goal}"
 NUM_TRIALS_PER_TASK="${NUM_TRIALS_PER_TASK:-50}"
+EVAL_LOG_DIR="${EVAL_LOG_DIR:-./tmp/libero/eval_logs}"
 MUJOCO_GL_VALUE="${MUJOCO_GL_VALUE:-egl}"
 PYOPENGL_PLATFORM_VALUE="${PYOPENGL_PLATFORM_VALUE:-egl}"
 
@@ -34,4 +35,5 @@ VIDEO_OUT_PATH="${MODEL_ROOT}/results/${TASK_SUITE_NAME}/${FOLDER_NAME}"
   --args.port "${PORT}" \
   --args.task-suite-name "${TASK_SUITE_NAME}" \
   --args.num-trials-per-task "${NUM_TRIALS_PER_TASK}" \
-  --args.video-out-path "${VIDEO_OUT_PATH}"
+  --args.video-out-path "${VIDEO_OUT_PATH}" \
+  --args.eval-log-dir "${EVAL_LOG_DIR}"

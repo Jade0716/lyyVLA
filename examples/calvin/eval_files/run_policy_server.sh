@@ -3,8 +3,8 @@ set -euo pipefail
 
 STARVLA_DIR="${STARVLA_DIR:-$(cd "$(dirname "$0")/../../.." && pwd)}"
 star_vla_python="${star_vla_python:-python}"
-your_ckpt="${your_ckpt:-/16T/liuyuyan/lyyvla/results/Checkpoints/calvin_gr00t_4actiontoken_dct_state_lora_modifystats-0.8B_20260623_161740/checkpoints/steps_40000_pytorch_model.pt}"
-gpu_id="${gpu_id:-1}"
+your_ckpt="${your_ckpt:-/16T/liuyuyan/lyyvla/results/Checkpoints/calvin_gr00t_4actiontoken_dct_4feature-0.8B_20260618_142618/checkpoints/steps_40000_pytorch_model.pt}"
+gpu_id="${gpu_id:-0}"
 port="${port:-5695}"
 USE_BF16="${USE_BF16:-1}"
 cd "${STARVLA_DIR}"

@@ -65,13 +65,20 @@ class PolicyServerWrapper:
 
         framework_cfg = model_cfg["framework"]
         framework_name = framework_cfg.get("name", "")
+        self._framework_name = str(framework_name)
         action_model_cfg = framework_cfg["action_model"]
         qwenvl_cfg = framework_cfg.get("qwenvl", {})
         vla_data_cfg = model_cfg.get("datasets", {}).get("vla_data", {})
         self._include_state = _config_flag(vla_data_cfg.get("include_state", False))
+        self._language_refresh_steps = None
+        self._vision_refresh_steps = None
 
         if "TwoChunk" in framework_name and "vision_refresh_steps" in qwenvl_cfg:
-            self._action_chunk_size = int(qwenvl_cfg["vision_refresh_steps"])
+            self._vision_refresh_steps = int(qwenvl_cfg["vision_refresh_steps"])
+            self._language_refresh_steps = int(
+                qwenvl_cfg.get("language_refresh_steps", self._vision_refresh_steps)
+            )
+            self._action_chunk_size = self._vision_refresh_steps
         elif "action_horizon" in action_model_cfg:
             self._action_chunk_size = int(action_model_cfg["action_horizon"])
         elif "future_action_window_size" in action_model_cfg:
@@ -128,11 +135,21 @@ class PolicyServerWrapper:
         base = {
             "env": "starvla_policy_server",
             "ckpt_path": self._ckpt_path,
+            "framework_name": self._framework_name,
             "action_chunk_size": self._action_chunk_size,
             "available_unnorm_keys": self._available_unnorm_keys,
             "default_unnorm_key": self._default_unnorm_key,
             "include_state": self._include_state,
         }
+        if self._vision_refresh_steps is not None:
+            base.update(
+                {
+                    "twochunk": True,
+                    "vision_refresh_steps": self._vision_refresh_steps,
+                    "language_refresh_steps": self._language_refresh_steps,
+                    "vlm_cache_strategy": "action_token_hidden_cache_bank",
+                }
+            )
         # Enrich with per-embodiment keys when a default processor already exists.
         if self._default_unnorm_key is not None:
             proc = self._get_processor(self._default_unnorm_key)
@@ -190,4 +207,7 @@ class PolicyServerWrapper:
             [proc.unapply_actions(normalized[b]) for b in range(normalized.shape[0])],
             axis=0,
         )
-        return {"actions": unnorm}
+        result: Dict[str, Any] = {"actions": unnorm}
+        if "inference_timing" in out:
+            result["inference_timing"] = out["inference_timing"]
+        return result

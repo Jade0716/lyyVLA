@@ -85,6 +85,9 @@ def sync_twochunk_data_config(cfg):
     old_vision_stride = vla_cfg.get("twochunk_vision_stride", None)
     vla_cfg.twochunk_window_size = window_size
     vla_cfg.twochunk_vision_stride = vision_stride
+    if bool(vla_cfg.get("state_memory_training", False)):
+        state_memory_cfg = framework_cfg.get("state_memory", {})
+        vla_cfg.state_memory_stride = int(state_memory_cfg.get("stride", vision_stride))
 
     if old_window_size not in (None, window_size) or old_vision_stride not in (None, vision_stride):
         logger.warning(

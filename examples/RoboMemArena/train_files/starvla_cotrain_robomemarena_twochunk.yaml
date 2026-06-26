@@ -1,97 +1,109 @@
-run_id: qwenact
+run_id: robomemarena_qwen3.5-0.8b_twochunk
 run_root_dir: results/Checkpoints
 seed: 42
 wandb_entity: your_wandb_entity
-wandb_project: llavavla
+wandb_project: starVLA_RoboMemArena
 is_debug: false
 version_id: "0.21"
 
 framework:
   name: QwenGR00T_ActionToken_TwoChunk
-  # For a non-TwoChunk baseline, change only this to QwenGR00T_ActionToken.
-  # It ignores image_sequence and unused TwoChunk qwenvl fields, while still
-  # training on the regular image/lang/action fields from this dataloader.
 
   qwenvl:
     base_vlm: /16T/liuyuyan/Qwen/Qwen3.5-0.8B
     attn_implementation: flash_attention_2
-    vl_hidden_dim: 2048
     language_refresh_steps: 32
-    vision_refresh_steps: 4
+    vision_refresh_steps: 8
+    twochunk_window_size: 32
     motion_dct_keep_freq: 4
+    motion_dct_chunk_len: 32
     motion_dct_include_gripper: true
     use_motion_dct_loss: true
     motion_dct_loss_weight: 1.0
+    detach_idct_condition: true
+    use_lora: false
+    lora_scope: language_model
+    lora_freeze_base_model: true
+    lora_r: 64
+    lora_alpha: 128
+    lora_dropout: 0.05
+    lora_target_modules: [q_proj, k_proj, v_proj, o_proj]
+
   dino:
     dino_backbone: dinov3_vits16plus
     dino_repo_path: /home/liuyuyan/dinov3
     dino_weights_path: /mnt/8ac36469-5f21-42a9-a6dd-21bfcb724d52/liuyuyan/DINO/dinov3_vits16plus_pretrain_lvd1689m-4057cbaa.pth
     dino_input_size: 256
+    num_query_tokens: 4
+    qformer_num_heads: 8
+    qformer_num_layers: 2
+    qformer_dropout: 0.1
 
   action_model:
+    num_target_vision_tokens: 4
     action_model_type: DiT-B
     hidden_size: 1024
-    add_pos_embed: True
+    add_pos_embed: true
     max_seq_len: 1024
     action_dim: 7
     state_dim: 8
-    # Used by QwenGR00T_ActionToken single-chunk training. TwoChunk uses
-    # framework.qwenvl.vision_refresh_steps as its fast chunk size.
-    action_horizon: 16
+    action_horizon: 8
 
     noise_beta_alpha: 1.5
     noise_beta_beta: 1.0
     noise_s: 0.999
     num_timestep_buckets: 1000
-    num_inference_timesteps: 4
-    num_target_vision_tokens: 32
     diffusion_model_cfg:
       action_dit_hidden_dim: 1024
       dropout: 0.2
       final_dropout: true
       interleave_self_attention: true
-      norm_type: "ada_norm"
+      norm_type: ada_norm
       num_layers: 16
       positional_embeddings: null
 
 datasets:
   vla_data:
     dataset_py: lerobot_datasets
-    include_state: false
-    data_root_dir: /16T/liuyuyan/
-    data_mix: calvin_abc
-    action_type: delta_qpos
+    include_state: true
+    data_root_dir: /16T/liuyuyan
+    data_mix: robomemarena_all
+    action_type: delta_eef
     twochunk_training: true
-    CoT_prompt: "The robot is franka with single arm. The control frequency is 20 Hz. Your task is: {instruction}. Based on the current visual observation and task instruction, infer the future motion trend required to accomplish the task. The motion representation should summarize the low-frequency dynamics of the next 32 control actions, including intended manipulation behavior, object interaction, and movement trajectory, while ignoring high-frequency control details."
-    per_device_batch_size: 4
+    CoT_prompt: "The robot is a Franka single-arm manipulator operating at 20 Hz. Your task is: {instruction}. Based on the current visual observation and task instruction, summarize the low-frequency future motion trend of the next 64 control actions into 8 learnable action tokens, then use each refreshed visual observation to refine the next 8 control actions."
+    per_device_batch_size: 32
     load_all_data_for_training: true
     video_backend: torchvision_av
     balance_dataset_weights: true
     balance_trajectory_weights: true
 
 trainer:
+  action_dit_loss_warmup: true
+  action_dit_loss_start_step: 10000
+  action_dit_loss_warmup_steps: 5000
   repeated_diffusion_steps: 16
   max_train_steps: 100000
   num_warmup_steps: 5000
   save_interval: 5000
   eval_interval: 100
   learning_rate:
-    base: 1e-05
-    # qwen_vl_interface: 1.0e-05
-    # motion_dct_head: 1.0e-05
-    # action_model: 1.0e-05
+    base: 2.5e-05
+    qwen_vl_interface: 1.0e-05
+    action_model: 1.0e-04
   lr_scheduler_type: cosine_with_min_lr
   scheduler_specific_kwargs:
     min_lr: 5.0e-07
-  freeze_modules: ''
+  freeze_modules: ""
   loss_scale:
     vla: 1.0
     vlm: 0.1
   max_grad_norm: 1.0
   weight_decay: 0.0
   logging_frequency: 10
+  log_actiontoken_grad_norm: false
+  grad_norm_logging_frequency: 100
   gradient_clipping: 1.0
-  gradient_accumulation_steps: 4
+  gradient_accumulation_steps: 2
 
   optimizer:
     name: AdamW

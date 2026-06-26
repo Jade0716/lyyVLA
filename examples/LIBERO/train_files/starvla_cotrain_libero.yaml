@@ -71,6 +71,7 @@ trainer:
   num_warmup_steps: 5000
   save_interval: 5000
   eval_interval: 100
+  
   learning_rate:
     base: 2.5e-05
     qwen_vl_interface: 1.0e-05

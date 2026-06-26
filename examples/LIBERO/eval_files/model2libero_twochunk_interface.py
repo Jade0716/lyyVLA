@@ -41,7 +41,17 @@ class TwoChunkModelClient(ModelClient):
             )
         self.twochunk_debug = twochunk_debug
         self.twochunk_debug_every_step = twochunk_debug_every_step
-        self.twochunk_short_chunks_per_long_window = int(twochunk_short_chunks_per_long_window)
+        if self.language_refresh_steps > 0 and self.vision_refresh_steps > 0:
+            if self.language_refresh_steps % self.vision_refresh_steps != 0:
+                raise ValueError(
+                    "language_refresh_steps must be divisible by vision_refresh_steps, got "
+                    f"{self.language_refresh_steps} and {self.vision_refresh_steps}."
+                )
+            self.twochunk_short_chunks_per_long_window = (
+                self.language_refresh_steps // self.vision_refresh_steps
+            )
+        else:
+            self.twochunk_short_chunks_per_long_window = int(twochunk_short_chunks_per_long_window)
         self._reset_server_cache = True
         self.long_chunk_time_total_s = 0.0
         self.long_chunk_time_count = 0
@@ -127,7 +137,15 @@ class TwoChunkModelClient(ModelClient):
             if self.short_chunk_time_count > 0
             else 0.0
         )
-        avg_32step_s = long_avg_s + self.twochunk_short_chunks_per_long_window * short_avg_s
+        long_window_steps = self.language_refresh_steps
+        short_chunks_per_32_steps = (
+            32.0 / float(self.vision_refresh_steps) if self.vision_refresh_steps > 0 else 0.0
+        )
+        long_refreshes_per_32_steps = (
+            32.0 / float(long_window_steps) if long_window_steps > 0 else 0.0
+        )
+        avg_long_window_s = long_avg_s + self.twochunk_short_chunks_per_long_window * short_avg_s
+        avg_32step_s = long_refreshes_per_32_steps * long_avg_s + short_chunks_per_32_steps * short_avg_s
         return {
             **super().get_inference_stats(),
             "vision_refresh_steps": self.vision_refresh_steps,
@@ -139,10 +157,18 @@ class TwoChunkModelClient(ModelClient):
             "avg_short_chunk_inference_time_s": short_avg_s,
             "total_short_chunk_inference_time_s": self.short_chunk_time_total_s,
             "short_chunk_inference_time_count": self.short_chunk_time_count,
-            "twochunk_short_chunks_per_32_steps": self.twochunk_short_chunks_per_long_window,
+            "twochunk_short_chunks_per_32_steps": short_chunks_per_32_steps,
+            "twochunk_short_chunks_per_long_window": self.twochunk_short_chunks_per_long_window,
+            "twochunk_long_window_steps": long_window_steps,
+            "twochunk_long_refreshes_per_32_steps": long_refreshes_per_32_steps,
             "avg_32step_inference_time_s": avg_32step_s,
+            "avg_long_window_inference_time_s": avg_long_window_s,
             "avg_32step_inference_time_formula": (
-                "avg_long_chunk_inference_time_s + "
+                "twochunk_long_refreshes_per_32_steps * avg_long_chunk_inference_time_s + "
                 "twochunk_short_chunks_per_32_steps * avg_short_chunk_inference_time_s"
+            ),
+            "avg_long_window_inference_time_formula": (
+                "avg_long_chunk_inference_time_s + "
+                "twochunk_short_chunks_per_long_window * avg_short_chunk_inference_time_s"
             ),
         }

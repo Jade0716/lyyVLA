@@ -97,10 +97,13 @@ def _inference_stats_with_per_action(client_model: ModelClient) -> dict:
     action_chunk_size = int(stats.get("action_chunk_size", 0) or 0)
     avg_chunk_time_s = float(stats.get("avg_model_inference_time_s", 0.0) or 0.0)
     avg_action_time_s = avg_chunk_time_s / action_chunk_size if action_chunk_size > 0 else 0.0
+    model_inference_hz = 1.0 / avg_action_time_s if avg_action_time_s > 0.0 else 0.0
     return {
         **stats,
         "avg_model_inference_time_per_action_s": avg_action_time_s,
         "avg_predict_action_time_per_action_s": avg_action_time_s,
+        "model_inference_hz": model_inference_hz,
+        "predict_action_hz": model_inference_hz,
     }
 
 
@@ -351,6 +354,7 @@ def eval_libero(args: Args) -> None:
             "Average model inference time: "
             f"{inference_stats['avg_model_inference_time_s']:.4f}s/chunk, "
             f"{inference_stats['avg_model_inference_time_per_action_s']:.4f}s/action "
+            f"({inference_stats.get('model_inference_hz', 0.0):.2f} Hz), "
             f"(chunk_size={inference_stats['action_chunk_size']}, "
             f"chunk_calls={inference_stats['model_inference_time_count']})"
         )
@@ -358,8 +362,18 @@ def eval_libero(args: Args) -> None:
             logging.info(
                 "TwoChunk 32-step model inference time: "
                 f"{inference_stats['avg_32step_inference_time_s']:.4f}s "
-                f"(long_avg={inference_stats['avg_long_chunk_inference_time_s']:.4f}s + "
+                f"(long_refreshes={inference_stats.get('twochunk_long_refreshes_per_32_steps', 1.0)}, "
+                f"long_avg={inference_stats['avg_long_chunk_inference_time_s']:.4f}s + "
                 f"{inference_stats['twochunk_short_chunks_per_32_steps']} * "
+                f"short_avg={inference_stats['avg_short_chunk_inference_time_s']:.4f}s)"
+            )
+        if "avg_long_window_inference_time_s" in inference_stats:
+            logging.info(
+                "TwoChunk long-window model inference time: "
+                f"{inference_stats['avg_long_window_inference_time_s']:.4f}s "
+                f"(window_steps={inference_stats.get('twochunk_long_window_steps', 32)}, "
+                f"long_avg={inference_stats['avg_long_chunk_inference_time_s']:.4f}s + "
+                f"{inference_stats.get('twochunk_short_chunks_per_long_window', 0)} * "
                 f"short_avg={inference_stats['avg_short_chunk_inference_time_s']:.4f}s)"
             )
 

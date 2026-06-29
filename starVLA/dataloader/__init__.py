@@ -1,5 +1,13 @@
 import json
 import os
+
+# TorchCodec must be imported before decord in this environment. If decord
+# loads its FFmpeg libraries first, TorchCodec can fail to detect AV1 streams.
+try:
+    import torchcodec  # noqa: F401
+except (ImportError, RuntimeError):
+    pass
+
 from accelerate.logging import get_logger
 import numpy as np
 from torch.utils.data import DataLoader
@@ -44,17 +52,33 @@ def build_dataloader(cfg, dataset_py="lerobot_datasets_oxe"): # TODO now here on
             balance_dataset_weights=vla_dataset_cfg.get("balance_dataset_weights", False),
             balance_trajectory_weights=vla_dataset_cfg.get("balance_trajectory_weights", False),
         )
-        
-        vla_train_dataloader = DataLoader(
-            vla_dataset,
-            batch_size=cfg.datasets.vla_data.per_device_batch_size,
-            collate_fn=collate_fn,
-            num_workers=cfg.datasets.vla_data.get("num_workers", 4),
-            pin_memory=True,
-            persistent_workers=cfg.datasets.vla_data.get("persistent_workers", False),
-            prefetch_factor=cfg.datasets.vla_data.get("prefetch_factor", 2),
+
+        num_workers = cfg.datasets.vla_data.get("num_workers", 4)
+        video_backend_kwargs = cfg.datasets.vla_data.get("video_backend_kwargs", {}) or {}
+        video_device = video_backend_kwargs.get("device", "cpu") if hasattr(video_backend_kwargs, "get") else "cpu"
+        multiprocessing_context = cfg.datasets.vla_data.get("multiprocessing_context", None)
+        if (
+            multiprocessing_context is None
+            and num_workers > 0
+            and cfg.datasets.vla_data.get("video_backend", None) == "torchcodec"
+            and str(video_device).startswith("cuda")
+        ):
+            multiprocessing_context = "spawn"
+
+        dataloader_kwargs = {
+            "batch_size": cfg.datasets.vla_data.per_device_batch_size,
+            "collate_fn": collate_fn,
+            "num_workers": num_workers,
+            "pin_memory": True,
             # shuffle=True
-        )        
+        }
+        if num_workers > 0:
+            dataloader_kwargs["persistent_workers"] = cfg.datasets.vla_data.get("persistent_workers", False)
+            dataloader_kwargs["prefetch_factor"] = cfg.datasets.vla_data.get("prefetch_factor", 2)
+            if multiprocessing_context is not None:
+                dataloader_kwargs["multiprocessing_context"] = multiprocessing_context
+
+        vla_train_dataloader = DataLoader(vla_dataset, **dataloader_kwargs)
         if dist.get_rank() == 0: 
             
             output_dir = Path(cfg.output_dir)

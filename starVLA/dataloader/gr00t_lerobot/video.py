@@ -17,9 +17,19 @@
 import av
 import cv2
 import numpy as np
+import warnings
 
 import torch  # noqa: F401 # isort: skip
 import torchvision  # noqa: F401 # isort: skip
+
+# Import torchcodec before decord. Importing decord first can load FFmpeg libs
+# that prevent torchcodec from detecting AV1 streams in the same process.
+try:
+    import torchcodec
+
+    TORCHCODEC_AVAILABLE = True
+except (ImportError, RuntimeError):
+    TORCHCODEC_AVAILABLE = False
 
 # Import decord with graceful fallback
 try:
@@ -29,12 +39,74 @@ try:
 except ImportError:
     DECORD_AVAILABLE = False
 
-try:
-    import torchcodec
 
-    TORCHCODEC_AVAILABLE = True
-except (ImportError, RuntimeError):
-    TORCHCODEC_AVAILABLE = False
+def _torchcodec_kwargs(video_backend_kwargs: dict | None) -> dict:
+    video_backend_kwargs = video_backend_kwargs or {}
+    return {
+        "device": video_backend_kwargs.get("device", "cpu"),
+        "dimension_order": video_backend_kwargs.get("dimension_order", "NHWC"),
+        "num_ffmpeg_threads": int(video_backend_kwargs.get("num_ffmpeg_threads", 1)),
+        "seek_mode": video_backend_kwargs.get("seek_mode", "exact"),
+    }
+
+
+def _fallback_video_backend(video_backend_kwargs: dict | None) -> str:
+    video_backend_kwargs = video_backend_kwargs or {}
+    fallback_backend = video_backend_kwargs.get("fallback_backend", "pyav")
+    if fallback_backend == "torchcodec":
+        fallback_backend = "pyav"
+    return fallback_backend
+
+
+def _torchcodec_cpu_kwargs(video_backend_kwargs: dict | None) -> dict:
+    kwargs = dict(video_backend_kwargs or {})
+    kwargs["device"] = "cpu"
+    return kwargs
+
+
+def _warn_torchcodec_fallback(exc: Exception, fallback_backend: str) -> None:
+    warnings.warn(
+        f"torchcodec video decoding failed, falling back to {fallback_backend}: {exc}",
+        RuntimeWarning,
+        stacklevel=3,
+    )
+
+
+def _torchcodec_frame_data_to_numpy(frame_data: torch.Tensor) -> np.ndarray:
+    return frame_data.detach().cpu().numpy()
+
+
+def _get_frames_by_indices_torchcodec(
+    video_path: str,
+    indices: list[int] | np.ndarray,
+    video_backend_kwargs: dict | None = None,
+) -> np.ndarray:
+    if not TORCHCODEC_AVAILABLE:
+        raise ImportError("torchcodec is not available.")
+    decoder = torchcodec.decoders.VideoDecoder(video_path, **_torchcodec_kwargs(video_backend_kwargs))
+    return _torchcodec_frame_data_to_numpy(decoder.get_frames_at(indices=indices).data)
+
+
+def _get_frames_by_timestamps_torchcodec(
+    video_path: str,
+    timestamps: list[float] | np.ndarray,
+    video_backend_kwargs: dict | None = None,
+) -> np.ndarray:
+    if not TORCHCODEC_AVAILABLE:
+        raise ImportError("torchcodec is not available.")
+    decoder = torchcodec.decoders.VideoDecoder(video_path, **_torchcodec_kwargs(video_backend_kwargs))
+    return _torchcodec_frame_data_to_numpy(decoder.get_frames_played_at(seconds=timestamps).data)
+
+
+def _get_all_frames_torchcodec(
+    video_path: str,
+    video_backend_kwargs: dict | None = None,
+) -> np.ndarray:
+    if not TORCHCODEC_AVAILABLE:
+        raise ImportError("torchcodec is not available.")
+    decoder = torchcodec.decoders.VideoDecoder(video_path, **_torchcodec_kwargs(video_backend_kwargs))
+    frames = decoder.get_frames_at(indices=range(len(decoder)))
+    return _torchcodec_frame_data_to_numpy(frames.data)
 
 
 def get_frames_by_indices(
@@ -50,12 +122,23 @@ def get_frames_by_indices(
         frames = vr.get_batch(indices)
         return frames.asnumpy()
     elif video_backend == "torchcodec":
-        if not TORCHCODEC_AVAILABLE:
-            raise ImportError("torchcodec is not available.")
-        decoder = torchcodec.decoders.VideoDecoder(
-            video_path, device="cpu", dimension_order="NHWC", num_ffmpeg_threads=0
-        )
-        return decoder.get_frames_at(indices=indices).data.numpy()
+        fallback_backend = _fallback_video_backend(video_backend_kwargs)
+        try:
+            return _get_frames_by_indices_torchcodec(video_path, indices, video_backend_kwargs)
+        except Exception as exc:
+            _warn_torchcodec_fallback(exc, fallback_backend)
+            if fallback_backend == "torchcodec_cpu":
+                return _get_frames_by_indices_torchcodec(
+                    video_path,
+                    indices,
+                    _torchcodec_cpu_kwargs(video_backend_kwargs),
+                )
+            return get_frames_by_indices(
+                video_path,
+                indices,
+                video_backend=fallback_backend,
+                video_backend_kwargs=video_backend_kwargs,
+            )
     elif video_backend == "opencv":
         frames = []
         cap = cv2.VideoCapture(video_path, **video_backend_kwargs)
@@ -151,12 +234,23 @@ def get_frames_by_timestamps(
         frames = vr.get_batch(indices)
         return frames.asnumpy()
     elif video_backend == "torchcodec":
-        if not TORCHCODEC_AVAILABLE:
-            raise ImportError("torchcodec is not available.")
-        decoder = torchcodec.decoders.VideoDecoder(
-            video_path,device="cpu", dimension_order="NHWC", num_ffmpeg_threads=0
-        )
-        return decoder.get_frames_played_at(seconds=timestamps).data.numpy()
+        fallback_backend = _fallback_video_backend(video_backend_kwargs)
+        try:
+            return _get_frames_by_timestamps_torchcodec(video_path, timestamps, video_backend_kwargs)
+        except Exception as exc:
+            _warn_torchcodec_fallback(exc, fallback_backend)
+            if fallback_backend == "torchcodec_cpu":
+                return _get_frames_by_timestamps_torchcodec(
+                    video_path,
+                    timestamps,
+                    _torchcodec_cpu_kwargs(video_backend_kwargs),
+                )
+            return get_frames_by_timestamps(
+                video_path,
+                timestamps,
+                video_backend=fallback_backend,
+                video_backend_kwargs=video_backend_kwargs,
+            )
     elif video_backend == "opencv":
         # Open the video file
         cap = cv2.VideoCapture(video_path, **video_backend_kwargs)
@@ -315,13 +409,23 @@ def get_all_frames(
         vr = decord.VideoReader(video_path, **video_backend_kwargs)
         frames = vr.get_batch(range(len(vr))).asnumpy()
     elif video_backend == "torchcodec":
-        if not TORCHCODEC_AVAILABLE:
-            raise ImportError("torchcodec is not available.")
-        decoder = torchcodec.decoders.VideoDecoder(
-            video_path, device="cpu", dimension_order="NHWC", num_ffmpeg_threads=0
-        )
-        frames = decoder.get_frames_at(indices=range(len(decoder)))
-        return frames.data.numpy(), frames.pts_seconds.numpy()
+        fallback_backend = _fallback_video_backend(video_backend_kwargs)
+        try:
+            frames = _get_all_frames_torchcodec(video_path, video_backend_kwargs)
+        except Exception as exc:
+            _warn_torchcodec_fallback(exc, fallback_backend)
+            if fallback_backend == "torchcodec_cpu":
+                frames = _get_all_frames_torchcodec(video_path, _torchcodec_cpu_kwargs(video_backend_kwargs))
+                if resize_size is not None:
+                    frames = [cv2.resize(frame, resize_size) for frame in frames]
+                    frames = np.array(frames)
+                return frames
+            return get_all_frames(
+                video_path,
+                video_backend=fallback_backend,
+                video_backend_kwargs=video_backend_kwargs,
+                resize_size=resize_size,
+            )
     elif video_backend == "pyav":
         container = av.open(video_path)
         frames = []

@@ -72,6 +72,7 @@ class _QWen3_5_VL_Interface(nn.Module):
         self.model = model
         self.processor = processor
         self.config = config
+        self._prompt_cache = {}
 
         # alin qwen3.5 with qwen2.5
         self.model.config.hidden_size = self.model.config.text_config.hidden_size
@@ -161,11 +162,14 @@ class _QWen3_5_VL_Interface(nn.Module):
         for imgs, instruction in zip(images, instructions):
             content = [{"type": "image", "image": img} for img in imgs]
 
-            if "CoT_prompt" in self.config.datasets.vla_data:  # If using a grounding prompt to task
-                CoT_prompt = self.config.datasets.vla_data.get("CoT_prompt", "")
-                prompt = CoT_prompt.replace("{instruction}", instruction)
-            else:
-                prompt = instruction
+            prompt = self._prompt_cache.get(instruction)
+            if prompt is None:
+                if "CoT_prompt" in self.config.datasets.vla_data:  # If using a grounding prompt to task
+                    CoT_prompt = self.config.datasets.vla_data.get("CoT_prompt", "")
+                    prompt = CoT_prompt.replace("{instruction}", instruction)
+                else:
+                    prompt = instruction
+                self._prompt_cache[instruction] = prompt
 
             content.append({"type": "text", "text": prompt})
             msg = [{"role": "user", "content": content}]

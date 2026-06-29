@@ -87,13 +87,31 @@ class DINOv3BackBone(nn.Module):
             num_views = len(img_list[0]) if img_list else 0
             image_tensors = torch.stack(flat_tensors).view(len(img_list), num_views, *flat_tensors[0].shape)
 
-        batch_size, num_views, channels, height, width = image_tensors.shape
-        image_tensors = image_tensors.view(batch_size * num_views, channels, height, width)
-        image_tensors = image_tensors.to(
-            device=next(self.parameters()).device,
-            dtype=torch.float32,
-            non_blocking=True,
-        )
+        batch_size, num_views = image_tensors.shape[:2]
+        device = next(self.parameters()).device
+        if image_tensors.ndim != 5:
+            raise ValueError(f"Expected 5D image tensor, got {tuple(image_tensors.shape)}")
+        if image_tensors.shape[2] in (1, 3):
+            _, _, channels, height, width = image_tensors.shape
+            image_tensors = image_tensors.view(batch_size * num_views, channels, height, width).to(
+                device=device,
+                non_blocking=True,
+            )
+        elif image_tensors.shape[-1] in (1, 3):
+            _, _, height, width, channels = image_tensors.shape
+            image_tensors = image_tensors.view(batch_size * num_views, height, width, channels).to(
+                device=device,
+                non_blocking=True,
+            )
+            image_tensors = image_tensors.permute(0, 3, 1, 2).contiguous()
+        else:
+            raise ValueError(f"Cannot infer image channel dimension from shape {tuple(image_tensors.shape)}")
+        if image_tensors.dtype == torch.uint8:
+            image_tensors = image_tensors.to(dtype=torch.float32).div_(255.0)
+        else:
+            image_tensors = image_tensors.to(dtype=torch.float32)
+            if image_tensors.max() > 1.0:
+                image_tensors = image_tensors / 255.0
         if height != self.input_size or width != self.input_size:
             image_tensors = F.interpolate(
                 image_tensors,
@@ -117,17 +135,11 @@ class DINOv3BackBone(nn.Module):
             if array.ndim != 5 or array.shape[-1] not in (1, 3):
                 return None
             if array.dtype == np.uint8:
-                return (
-                    torch.from_numpy(np.ascontiguousarray(array))
-                    .permute(0, 1, 4, 2, 3)
-                    .contiguous()
-                    .to(dtype=torch.float32)
-                    .div_(255.0)
-                )
+                return torch.from_numpy(np.ascontiguousarray(array))
             array = array.astype(np.float32, copy=False)
             if array.max() > 1.0:
                 array = array / 255.0
-            return torch.from_numpy(np.ascontiguousarray(array)).permute(0, 1, 4, 2, 3).contiguous()
+            return torch.from_numpy(np.ascontiguousarray(array))
 
         if isinstance(first, torch.Tensor):
             try:
@@ -136,14 +148,8 @@ class DINOv3BackBone(nn.Module):
                 return None
             if tensor.ndim != 5:
                 return None
-            if tensor.shape[2] in (1, 3):
-                tensor = tensor.to(dtype=torch.float32)
-            elif tensor.shape[-1] in (1, 3):
-                tensor = tensor.permute(0, 1, 4, 2, 3).contiguous().to(dtype=torch.float32)
-            else:
+            if tensor.shape[2] not in (1, 3) and tensor.shape[-1] not in (1, 3):
                 return None
-            if tensor.max() > 1.0:
-                tensor = tensor / 255.0
             return tensor
 
         return None

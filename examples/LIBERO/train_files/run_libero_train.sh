@@ -54,10 +54,10 @@ accelerate launch \
   --main_process_port 29501 \
   starVLA/training/train_starvla.py \
   --config_yaml ${config_yaml} \
-  --trainer.vla_data.video_backend torchvision_av \
+  --trainer.vla_data.video_backend torchcodec \
   --trainer.max_train_steps 100000 \
   --trainer.save_interval 10000 \
-  --trainer.logging_frequency 10 \
+  --trainer.logging_frequency 100 \
   --trainer.eval_interval 100 \
   --run_root_dir ${run_root_dir} \
   --run_id ${run_id} \

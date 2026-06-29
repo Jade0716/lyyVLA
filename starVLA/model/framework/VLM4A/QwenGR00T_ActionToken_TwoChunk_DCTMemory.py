@@ -236,21 +236,6 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
         if examples and "image_sequence" not in examples[0]:
             return super().forward(examples=examples, **kwargs)
 
-        profile_timing = bool(kwargs.get("profile_model_time", False))
-        timing = {}
-        if profile_timing:
-            self._sync_cuda_if_needed()
-        timing_last = time.perf_counter()
-
-        def mark_timing(name: str) -> None:
-            nonlocal timing_last
-            if not profile_timing:
-                return
-            self._sync_cuda_if_needed()
-            now = time.perf_counter()
-            timing[f"timing/twochunk/{name}"] = now - timing_last
-            timing_last = now
-
         image_sequences = [example["image_sequence"] for example in examples]
         instructions = [example["lang"] for example in examples]
         actions = [example["action"] for example in examples]
@@ -260,7 +245,6 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
             device=self.action_query_token.device,
             dtype=self.action_query_token.dtype,
         )
-        mark_timing("actions_to_tensor")
         num_refreshes = self._valid_training_refreshes(image_sequences, actions)
         if num_refreshes == 0:
             raise ValueError(
@@ -275,20 +259,17 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
             images=qwen_first_frame_images,
             instructions=instructions,
         )
-        mark_timing("qwen_build_inputs")
         action_token_hidden = self._encode_action_token_hidden(
             qwen_first_frame_images,
             instructions,
             qwen_inputs=qwen_inputs,
         )
-        mark_timing("qwen_forward")
 
         summary, recent, summary_valid, recent_valid, summary_count = self._examples_dct_memory(
             examples,
             device=action_token_hidden.device,
             dtype=action_token_hidden.dtype,
         )
-        mark_timing("memory_examples_to_tensor")
         memory_tokens = self._dct_memory_tokens(
             summary,
             recent,
@@ -296,19 +277,16 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
             recent_valid,
             summary_count,
         )
-        mark_timing("memory_tokens")
 
         long_chunk_len = min(self.motion_dct_chunk_len, actions.shape[1])
         motion_dct_loss = self._compute_motion_dct_loss(action_token_hidden, actions, long_chunk_len)
         weighted_motion_dct_loss = self.motion_dct_loss_weight * motion_dct_loss
         action_loss_weight = self._action_loss_weight(kwargs.get("train_step", None))
-        mark_timing("motion_dct_loss")
 
         coarse_long_action = self._predict_coarse_action(action_token_hidden, long_chunk_len)
         if self.detach_idct_condition:
             coarse_long_action = coarse_long_action.detach()
         coarse_long_action = self._coarse_with_gripper_pad(coarse_long_action, action_dim=actions.shape[-1])
-        mark_timing("coarse_idct_prior")
 
         flat_frame_images = []
         residual_action_targets = []
@@ -320,30 +298,23 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
 
         flat_action_token_hidden = action_token_hidden.repeat(num_refreshes, 1, 1)
         flat_memory_tokens = memory_tokens.repeat(num_refreshes, 1, 1)
-        mark_timing("build_residual_targets")
         dino_image_tensors = self.dino_encoder.prepare_dino_input(flat_frame_images)
-        mark_timing("dino_prepare_input")
         fused_hidden = self._build_action_condition_with_memory(
             flat_action_token_hidden,
             flat_memory_tokens,
             flat_frame_images,
             dino_image_tensors=dino_image_tensors,
         )
-        mark_timing("dino_encode_project_concat")
         residual_action_targets = torch.cat(residual_action_targets, dim=0).to(
             device=fused_hidden.device,
             dtype=fused_hidden.dtype,
         )
-        mark_timing("targets_to_device")
 
         with torch.autocast("cuda", dtype=torch.float32):
             pred_residual_actions = self.action_model.predict_action(fused_hidden)
-            mark_timing("action_head_predict")
             action_loss = self.l1_loss(pred_residual_actions, residual_action_targets)
-            mark_timing("action_loss")
 
         total_loss = action_loss_weight * action_loss + weighted_motion_dct_loss
-        mark_timing("total_loss")
         output = {
             "action_loss": total_loss,
             "action_dit_loss": action_loss,
@@ -367,7 +338,6 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
                     ),
                 }
             )
-        output.update(timing)
         return output
 
     def _online_memory_tokens(self, batch_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:

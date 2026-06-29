@@ -28,7 +28,7 @@ import hashlib
 import io
 import json, torch
 import copy
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from pathlib import Path
 from typing import Sequence
 import os, random
@@ -631,7 +631,8 @@ class LeRobotSingleDataset(Dataset):
         # self._episodes = self._get_episode_info() # TODO why we need this func
         self.curr_traj_data = None
         self.curr_traj_id = None
-        self._dct_memory_cache = {}
+        self._dct_memory_cache = OrderedDict()
+        self._dct_memory_cache_size = self._get_dct_memory_cache_size()
 
         self._trajectory_ids, self._trajectory_lengths = self._get_trajectories()
         self._modality_keys = self._get_modality_keys()
@@ -645,6 +646,9 @@ class LeRobotSingleDataset(Dataset):
 
         # Check if the dataset is valid
         self._check_integrity()
+
+    def __del__(self):
+        self._close_dct_memory_cache()
 
     @property
     def dataset_path(self) -> Path:
@@ -1468,10 +1472,36 @@ class LeRobotSingleDataset(Dataset):
         suffix = f"chunk{chunk_len}_recent{chunk_keep}_summary{summary_keep}_sliding-start"
         return self.dataset_path / "meta" / "dct_bank_cache" / suffix
 
+    def _get_dct_memory_cache_size(self) -> int:
+        cache_size = 8
+        if self.data_cfg is not None and self.data_cfg.get("dct_memory_cache_size", None) is not None:
+            cache_size = int(self.data_cfg.get("dct_memory_cache_size"))
+        if os.environ.get("DCT_MEMORY_CACHE_SIZE") is not None:
+            cache_size = int(os.environ["DCT_MEMORY_CACHE_SIZE"])
+        if cache_size < 1:
+            raise ValueError("dct_memory_cache_size must be >= 1")
+        return cache_size
+
+    @staticmethod
+    def _close_npz_cache(cache) -> None:
+        close_fn = getattr(cache, "close", None)
+        if close_fn is not None:
+            close_fn()
+
+    def _close_dct_memory_cache(self) -> None:
+        cache_dict = getattr(self, "_dct_memory_cache", None)
+        if not cache_dict:
+            return
+        while cache_dict:
+            _, cache = cache_dict.popitem(last=False)
+            self._close_npz_cache(cache)
+
     def _load_dct_memory_cache(self, trajectory_id: int):
         cache_key = int(trajectory_id)
         if cache_key in self._dct_memory_cache:
-            return self._dct_memory_cache[cache_key]
+            cache = self._dct_memory_cache.pop(cache_key)
+            self._dct_memory_cache[cache_key] = cache
+            return cache
 
         cache_path = self._dct_memory_cache_dir() / f"episode_{cache_key:06d}.npz"
         if not cache_path.exists():
@@ -1481,6 +1511,9 @@ class LeRobotSingleDataset(Dataset):
             )
         cache = np.load(cache_path)
         self._dct_memory_cache[cache_key] = cache
+        while len(self._dct_memory_cache) > self._dct_memory_cache_size:
+            _, old_cache = self._dct_memory_cache.popitem(last=False)
+            self._close_npz_cache(old_cache)
         return cache
 
     @staticmethod

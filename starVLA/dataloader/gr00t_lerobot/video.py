@@ -14,6 +14,8 @@
 # limitations under the License.
 
 
+import os
+
 import av
 import cv2
 import numpy as np
@@ -40,10 +42,20 @@ except ImportError:
     DECORD_AVAILABLE = False
 
 
+def _resolve_torchcodec_device(device: str) -> str:
+    if device == "cuda":
+        local_rank = os.environ.get("LOCAL_RANK")
+        if local_rank is not None and torch.cuda.is_available():
+            rank_index = int(local_rank)
+            if rank_index < torch.cuda.device_count():
+                return f"cuda:{rank_index}"
+    return device
+
+
 def _torchcodec_kwargs(video_backend_kwargs: dict | None) -> dict:
     video_backend_kwargs = video_backend_kwargs or {}
     return {
-        "device": video_backend_kwargs.get("device", "cpu"),
+        "device": _resolve_torchcodec_device(str(video_backend_kwargs.get("device", "cpu"))),
         "dimension_order": video_backend_kwargs.get("dimension_order", "NHWC"),
         "num_ffmpeg_threads": int(video_backend_kwargs.get("num_ffmpeg_threads", 1)),
         "seek_mode": video_backend_kwargs.get("seek_mode", "exact"),

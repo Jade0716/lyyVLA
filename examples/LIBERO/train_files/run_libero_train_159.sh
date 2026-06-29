@@ -13,7 +13,7 @@ export NCCL_SOCKET_TIMEOUT_MS=360000
 ###########################################################################################
 # === Please modify the following paths according to your environment ===
 config_yaml=${config_yaml:-./examples/LIBERO/train_files/starvla_cotrain_libero_twochunk_dct_memory_159.yaml}
-run_id=${run_id:-liberolong_qwen3.5-0.8b-twochunk-dctmemory-$(date +%Y%m%d_%H%M%S)}
+run_id=${run_id:-libero10_qwen3.5-0.8b-twochunk-dctmemory-$(date +%Y%m%d_%H%M%S)}
 LOG_TO_FILE=${LOG_TO_FILE:-1}
 # === End of environment variable configuration ===
 ###########################################################################################
@@ -54,7 +54,7 @@ accelerate launch \
   --main_process_port 29500 \
   starVLA/training/train_starvla.py \
   --config_yaml ${config_yaml} \
-  --trainer.vla_data.video_backend torchvision_av \
+  --datasets.vla_data.video_backend torchcodec \
   --trainer.max_train_steps 150000 \
   --trainer.save_interval 10000 \
   --trainer.logging_frequency 100 \

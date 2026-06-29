@@ -81,7 +81,7 @@ datasets:
     dataset_py: lerobot_datasets
     include_state: true
     data_root_dir: /mnt/4T_disk/16T/liuyuyan/libero/
-    data_mix: libero_goal
+    data_mix: libero_10
     action_type: delta_qpos
     twochunk_training: true
     dct_memory_training: true
@@ -91,9 +91,19 @@ datasets:
     CoT_prompt: "The robot is franka with single arm. The control frequency is 20 Hz. Your task is: {instruction}. Based on the current visual observation and task instruction, summarize the low-frequency future motion trend of the next 32 control actions into 4 learnable action tokens, then use the current observation to refine the next 4 control actions."
     per_device_batch_size: 8
     load_all_data_for_training: true
-    video_backend: torchvision_av
+    video_backend: torchcodec
+    video_backend_kwargs:
+      device: cpu
+      num_ffmpeg_threads: 1
+      seek_mode: exact
+      fallback_backend: torchcodec_cpu
     balance_dataset_weights: true
     balance_trajectory_weights: true
+    num_workers: 1
+    multiprocessing_context: spawn
+    persistent_workers: true
+    prefetch_factor: 1
+    dct_memory_cache_size: 32
 trainer:
   action_dit_loss_warmup: true
   action_dit_loss_start_step: 10000

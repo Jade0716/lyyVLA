@@ -648,12 +648,19 @@ def main() -> None:
                 progress.update(status=f"{status_prefix} hashing source")
             source_hashes[source.path] = sha256_file(source.path)
         episodes_rows.append(
-            {"episode_index": episode_index, "tasks": [prompt], "length": length}
+            {
+                "episode_index": episode_index,
+                "tasks": [prompt],
+                "length": length,
+                "source_task_id": source.task_id,
+                "task_index": task_index,
+            }
         )
         provenance_rows.append(
             {
                 "episode_index": episode_index,
                 "task_id": source.task_id,
+                "task_index": task_index,
                 "seed": source.seed,
                 "source_path": str(source.path),
                 "source_size_bytes": source.path.stat().st_size,

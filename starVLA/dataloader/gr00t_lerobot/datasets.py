@@ -1399,7 +1399,6 @@ class LeRobotSingleDataset(Dataset):
             image = data[video_key][0]
             # Preserve the decoded dataset resolution here. Each visual encoder
             # owns its preprocessing and can resize to its required input size.
-            image = Image.fromarray(image)
             step_images.append(image)
 
         language = data[self.modality_keys["language"][0]][0]
@@ -1422,7 +1421,6 @@ class LeRobotSingleDataset(Dataset):
                 frame_views = []
                 for video_key in self.modality_keys["video"]:
                     image = data[video_key][frame_i]
-                    image = Image.fromarray(image)
                     frame_views.append(image)
                 image_sequence.append(frame_views)
             sample["image_sequence"] = image_sequence

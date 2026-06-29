@@ -307,6 +307,20 @@ class VLATrainer(TrainerUtils):
             wandb.log(metrics, step=self.completed_steps)
             logger.info(f"Step {self.completed_steps}, Loss: {metrics})")
 
+    def _log_timing_metrics(self, metrics):
+        """Print detailed timing metrics independently from normal loss logging."""
+        if not bool(getattr(self.config.trainer, "profile_model_time", False)):
+            return
+        timing_frequency = int(getattr(self.config.trainer, "profile_model_time_frequency", 10) or 10)
+        if self.completed_steps <= 0 or self.completed_steps % timing_frequency != 0 or dist.get_rank() != 0:
+            return
+        timing_metrics = {
+            key: f"{float(value):.4f}"
+            for key, value in sorted(metrics.items())
+            if key.startswith("timing/")
+        }
+        logger.info(f"Timing Step {self.completed_steps}: {timing_metrics}")
+
     def _create_data_iterators(self):
         """Create data iterators."""
         self.vla_iter = iter(self.vla_train_dataloader)
@@ -349,12 +363,18 @@ class VLATrainer(TrainerUtils):
                 self.completed_steps += 1
 
             if self.accelerator.is_local_main_process:
-                progress_bar.set_postfix(
-                    {
-                        "data_times": f"{t_end_data - t_start_data:.3f}",
-                        "model_times": f"{t_end_model - t_start_model:.3f}",
-                    }
-                )
+                progress_postfix = {
+                    "data_times": f"{t_end_data - t_start_data:.3f}",
+                    "model_times": f"{t_end_model - t_start_model:.3f}",
+                }
+                if bool(getattr(self.config.trainer, "profile_model_time", False)):
+                    if "timing/train_forward" in step_metrics:
+                        progress_postfix["forward"] = f"{step_metrics['timing/train_forward']:.3f}"
+                    if "timing/train_backward" in step_metrics:
+                        progress_postfix["backward"] = f"{step_metrics['timing/train_backward']:.3f}"
+                    if "timing/train_optimizer_step" in step_metrics:
+                        progress_postfix["optim"] = f"{step_metrics['timing/train_optimizer_step']:.3f}"
+                progress_bar.set_postfix(progress_postfix)
 
             if (
                 self.accelerator.sync_gradients
@@ -365,6 +385,7 @@ class VLATrainer(TrainerUtils):
 
             step_metrics["timing/data"] = t_end_data - t_start_data
             step_metrics["timing/model"] = t_end_model - t_start_model
+            self._log_timing_metrics(step_metrics)
             self._log_metrics(step_metrics)
 
             if (
@@ -411,6 +432,13 @@ class VLATrainer(TrainerUtils):
 
     def _train_step(self, batch_vla, batch_vlm=None):
         """Execute single training step."""
+        profile_model_time = bool(getattr(self.config.trainer, "profile_model_time", False))
+
+        def sync_if_profiled():
+            if profile_model_time and torch.cuda.is_available():
+                torch.cuda.synchronize()
+
+        train_timing = {}
         with self.accelerator.accumulate(self.model):
             grad_norm_frequency = int(getattr(self.config.trainer, "grad_norm_logging_frequency", 0) or 0)
             next_completed_step = self.completed_steps + 1
@@ -420,33 +448,52 @@ class VLATrainer(TrainerUtils):
                 and self.accelerator.sync_gradients
                 and next_completed_step % grad_norm_frequency == 0
             )
+            sync_if_profiled()
+            t_forward_start = time.perf_counter()
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 output_dict = self.model.forward(
                     batch_vla,
                     train_step=self.completed_steps,
                     max_train_steps=self.config.trainer.max_train_steps,
                     log_actiontoken_grad_norm=log_actiontoken_grad_norm,
+                    profile_model_time=profile_model_time,
                 )
                 total_loss = output_dict["action_loss"]
+            sync_if_profiled()
+            train_timing["timing/train_forward"] = time.perf_counter() - t_forward_start
 
+            t_backward_start = time.perf_counter()
             self.accelerator.backward(total_loss)
+            sync_if_profiled()
+            train_timing["timing/train_backward"] = time.perf_counter() - t_backward_start
 
             if self.config.trainer.gradient_clipping is not None:
+                t_clip_start = time.perf_counter()
                 self.accelerator.clip_grad_norm_(self.model.parameters(), self.config.trainer.gradient_clipping)
+                sync_if_profiled()
+                train_timing["timing/train_clip_grad"] = time.perf_counter() - t_clip_start
 
+            t_optimizer_start = time.perf_counter()
             self.optimizer.step()
+            sync_if_profiled()
+            train_timing["timing/train_optimizer_step"] = time.perf_counter() - t_optimizer_start
             # Only step the LR scheduler when gradients are actually synced
             # (i.e., not mid-accumulation). Without this guard the scheduler
             # runs gradient_accumulation_steps times faster than intended,
             # causing warmup to end too early and cosine decay to bottom out
             # at min_lr well before max_train_steps is reached.
             if self.accelerator.sync_gradients:
+                t_lr_start = time.perf_counter()
                 self.lr_scheduler.step()
+                train_timing["timing/train_lr_scheduler"] = time.perf_counter() - t_lr_start
+            t_zero_grad_start = time.perf_counter()
             self.optimizer.zero_grad()
+            train_timing["timing/train_zero_grad"] = time.perf_counter() - t_zero_grad_start
 
         log_dict = {
             "action_loss": total_loss.item(),
         }
+        log_dict.update(train_timing)
         for loss_key in (
             "action_dit_loss",
             "action_dit_loss_weight",
@@ -460,6 +507,9 @@ class VLATrainer(TrainerUtils):
             if loss_key in output_dict:
                 loss_value = output_dict[loss_key]
                 log_dict[loss_key] = loss_value.item() if hasattr(loss_value, "item") else loss_value
+        for metric_key, metric_value in output_dict.items():
+            if metric_key.startswith("timing/"):
+                log_dict[metric_key] = metric_value.item() if hasattr(metric_value, "item") else metric_value
         return log_dict
 
     def _finalize_training(self):

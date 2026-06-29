@@ -273,6 +273,8 @@ def main() -> None:
 
     task_prompt_by_index = {int(row["task_index"]): str(row["task"]) for row in tasks}
     report.check(len(task_prompt_by_index) == len(tasks), "Duplicate task_index in tasks.jsonl")
+    task_index_by_prompt = {prompt: task_index for task_index, prompt in task_prompt_by_index.items()}
+    report.check(len(task_index_by_prompt) == len(tasks), "Duplicate task prompt in tasks.jsonl")
     for task_index, prompt in task_prompt_by_index.items():
         report.check(bool(prompt.strip()), f"Empty task prompt for task_index={task_index}")
 
@@ -300,17 +302,25 @@ def main() -> None:
         episode_index = int(episode["episode_index"])
         length = int(episode["length"])
         task_id = int(source["task_id"])
-        expected_task_index = task_id - 1
+        episode_tasks = episode.get("tasks")
+        report.check(isinstance(episode_tasks, list) and len(episode_tasks) == 1, "Episode must have exactly one task")
+        episode_prompt = str(episode_tasks[0]) if isinstance(episode_tasks, list) and episode_tasks else ""
+        expected_task_index = task_index_by_prompt.get(episode_prompt)
         report.check(episode_index == position, f"Non-contiguous episode index at position {position}")
         report.check(int(source["episode_index"]) == episode_index, "Provenance episode index mismatch")
         report.check(int(source["length"]) == length, "Provenance length mismatch")
-        report.check(episode.get("tasks") == [task_prompt_by_index[expected_task_index]], "Episode task mismatch")
+        report.check(source.get("prompt") == episode_prompt, "Provenance prompt mismatch")
+        report.check(expected_task_index is not None, "Episode task missing from tasks.jsonl")
+        if "task_index" in episode:
+            report.check(int(episode["task_index"]) == expected_task_index, "Episode task_index mismatch")
+        if "source_task_id" in episode:
+            report.check(int(episode["source_task_id"]) == task_id, "Episode source_task_id mismatch")
         chunk_index = episode_index // chunk_size
         parquet_path = (
             dataset_dir / f"data/chunk-{chunk_index:03d}/episode_{episode_index:06d}.parquet"
         )
         report.check(parquet_path.is_file(), f"Missing parquet: {parquet_path}")
-        if parquet_path.is_file():
+        if parquet_path.is_file() and expected_task_index is not None:
             global_index, arrays = validate_parquet(
                 path=parquet_path,
                 episode_index=episode_index,

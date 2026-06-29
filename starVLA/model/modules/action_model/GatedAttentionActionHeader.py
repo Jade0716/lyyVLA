@@ -1,8 +1,8 @@
-"""VLA-Adapter-style gated attention action head for token-condition inputs.
+"""Attention action head for token-condition inputs.
 
 This head keeps the simple ``predict_action(condition_tokens)`` interface used
 by the current ActionToken/TwoChunk frameworks, while replacing adaptive
-pooling with learned action chunk queries and gated multi-head attention blocks.
+pooling with learned action chunk queries and multi-head attention blocks.
 """
 
 import math
@@ -39,7 +39,7 @@ class RotaryPositionEmbedding(nn.Module):
 
 
 class GatedAttentionBlock(nn.Module):
-    """Residual MLP block with self, task, and gated adapter attention."""
+    """Residual MLP block with action-query self attention and condition attention."""
 
     def __init__(self, dim: int, num_heads: int = 8, use_rope: bool = True):
         super().__init__()
@@ -61,7 +61,6 @@ class GatedAttentionBlock(nn.Module):
         self.k_condition = nn.Linear(dim, dim)
         self.v_condition = nn.Linear(dim, dim)
         self.o_proj = nn.Linear(dim, dim)
-        self.gating_factor = nn.Parameter(torch.zeros(1))
         self.rope = RotaryPositionEmbedding(self.head_dim) if use_rope else None
 
     def _to_heads(self, tensor: torch.Tensor) -> torch.Tensor:
@@ -85,8 +84,7 @@ class GatedAttentionBlock(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        task_condition: torch.Tensor | None = None,
-        adapter_condition: torch.Tensor | None = None,
+        condition: torch.Tensor | None = None,
     ) -> torch.Tensor:
         batch, action_len, hidden_dim = x.shape
 
@@ -101,24 +99,14 @@ class GatedAttentionBlock(nn.Module):
         attn_scores = [torch.matmul(q, k_self.transpose(-2, -1))]
         values = [v_self]
 
-        if task_condition is not None and task_condition.shape[1] > 0:
-            k_task, v_task = self._project_condition(
-                task_condition,
+        if condition is not None and condition.shape[1] > 0:
+            k_condition, v_condition = self._project_condition(
+                condition,
                 self.k_condition,
                 self.v_condition,
             )
-            attn_scores.append(torch.matmul(q, k_task.transpose(-2, -1)))
-            values.append(v_task)
-
-        if adapter_condition is not None and adapter_condition.shape[1] > 0:
-            k_adapter, v_adapter = self._project_condition(
-                adapter_condition,
-                self.k_condition,
-                self.v_condition,
-            )
-            ratio_g = torch.tanh(self.gating_factor)
-            attn_scores.append(torch.matmul(q, k_adapter.transpose(-2, -1)) * ratio_g)
-            values.append(v_adapter)
+            attn_scores.append(torch.matmul(q, k_condition.transpose(-2, -1)))
+            values.append(v_condition)
 
         scores = torch.cat(attn_scores, dim=-1) / math.sqrt(self.head_dim)
         weights = torch.softmax(scores, dim=-1)
@@ -148,6 +136,8 @@ class GatedAttentionActionHead(nn.Module):
         self.hidden_dim = hidden_dim
         self.action_dim = action_dim
         self.NUM_ACTIONS_CHUNK = NUM_ACTIONS_CHUNK
+        # Kept for backward-compatible configs. The current head attends over
+        # all condition tokens directly instead of splitting a gated adapter path.
         self.adapter_token_count = adapter_token_count
 
         query_dim = input_dim * action_dim
@@ -173,12 +163,6 @@ class GatedAttentionActionHead(nn.Module):
     def predict_action(self, actions_hidden_states: torch.Tensor) -> torch.Tensor:
         batch_size = actions_hidden_states.shape[0]
         condition = self.condition_proj(actions_hidden_states)
-        adapter_condition = None
-        task_condition = condition
-        if self.adapter_token_count is not None and self.adapter_token_count > 0:
-            adapter_count = min(int(self.adapter_token_count), condition.shape[1])
-            adapter_condition = condition[:, :adapter_count, :]
-            task_condition = condition[:, adapter_count:, :]
         query = self.action_chunk_embeddings.to(
             device=actions_hidden_states.device,
             dtype=actions_hidden_states.dtype,
@@ -186,11 +170,7 @@ class GatedAttentionActionHead(nn.Module):
         query = query.unsqueeze(0).expand(batch_size, -1, -1)
         x = self.query_proj(self.query_norm(query))
         for block in self.blocks:
-            x = block(
-                x,
-                task_condition=task_condition,
-                adapter_condition=adapter_condition,
-            )
+            x = block(x, condition=condition)
         return self.output_proj(self.output_norm(x))
 
     def forward(self, actions_hidden_states: torch.Tensor) -> torch.Tensor:

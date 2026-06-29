@@ -1,8 +1,8 @@
-run_id: qwenact_twochunk_dct_memory
-run_root_dir: results/Checkpoints
+run_id: qwenact_twochunk_state_memory
+run_root_dir: /16T/liuyuyan/lyyvla/results/Checkpoints
 seed: 42
-wandb_entity: your_wandb_entity
-wandb_project: llavavla
+wandb_entity: jade0716-hefei-university-of-technology
+wandb_project: starVLA_Libero
 is_debug: false
 version_id: "0.21"
 
@@ -94,7 +94,7 @@ datasets:
     video_backend: torchvision_av
     balance_dataset_weights: true
     balance_trajectory_weights: true
-    num_workers: 16
+    num_workers: 4
     persistent_workers: true
     prefetch_factor: 4
 trainer:
@@ -123,6 +123,8 @@ trainer:
   max_grad_norm: 1.0
   weight_decay: 0.0
   logging_frequency: 10
+  profile_model_time: false
+  profile_model_time_frequency: 10
   log_actiontoken_grad_norm: false
   grad_norm_logging_frequency: 100
   gradient_clipping: 1.0

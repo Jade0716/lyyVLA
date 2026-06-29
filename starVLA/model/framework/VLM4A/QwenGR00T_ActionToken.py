@@ -5,7 +5,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from scipy.fft import dct
 
 from deployment.model_server.tools.image_tools import to_pil_preserve
 from starVLA.model.framework.VLM4A.QwenGR00T import Qwen_GR00T
@@ -50,6 +49,26 @@ class Qwen_GR00T_ActionToken(Qwen_GR00T):
                 action_dim=self.motion_dct_action_dim,
                 NUM_ACTIONS_CHUNK=self.motion_dct_keep_freq,
             )
+        self._active_dct_basis_name = ""
+
+    def _refresh_dct_basis(self, chunk_len: int) -> None:
+        basis_key = f"_dct_basis_{chunk_len}_{self.motion_dct_keep_freq}"
+        if hasattr(self, basis_key):
+            self._active_dct_basis_name = basis_key
+            return
+
+        time = torch.arange(chunk_len, dtype=torch.float32).unsqueeze(1)
+        freq = torch.arange(self.motion_dct_keep_freq, dtype=torch.float32).unsqueeze(0)
+        basis = torch.cos(torch.pi / float(chunk_len) * (time + 0.5) * freq)
+        basis[:, 0] *= (1.0 / float(chunk_len)) ** 0.5
+        if self.motion_dct_keep_freq > 1:
+            basis[:, 1:] *= (2.0 / float(chunk_len)) ** 0.5
+        self.register_buffer(basis_key, basis, persistent=False)
+        self._active_dct_basis_name = basis_key
+
+    def _dct_basis(self, chunk_len: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        self._refresh_dct_basis(chunk_len)
+        return getattr(self, self._active_dct_basis_name).to(device=device, dtype=dtype)
 
     def _append_action_query(self, qwen_inputs: dict) -> dict:
         model = self.qwen_vl_interface.model
@@ -189,12 +208,18 @@ class Qwen_GR00T_ActionToken(Qwen_GR00T):
         }
 
     def _motion_dct_target(self, actions: torch.Tensor, chunk_len: int) -> torch.Tensor:
-        action_chunk = actions[:, :chunk_len, : self.motion_dct_action_dim].detach().float().cpu().numpy()
-        low_dct_gt = dct(action_chunk, type=2, axis=1, norm="ortho")[:, : self.motion_dct_keep_freq, :]
+        action_chunk = actions[:, :chunk_len, : self.motion_dct_action_dim].detach()
+        effective_keep_freq = min(self.motion_dct_keep_freq, chunk_len)
+        basis = self._dct_basis(
+            chunk_len=chunk_len,
+            device=actions.device,
+            dtype=torch.float32,
+        )[:, :effective_keep_freq]
+        low_dct_gt = torch.einsum("btd,tk->bkd", action_chunk.float(), basis)
         if low_dct_gt.shape[1] < self.motion_dct_keep_freq:
             pad_len = self.motion_dct_keep_freq - low_dct_gt.shape[1]
-            low_dct_gt = np.pad(low_dct_gt, ((0, 0), (0, pad_len), (0, 0)))
-        return torch.from_numpy(low_dct_gt).to(device=actions.device, dtype=actions.dtype)
+            low_dct_gt = F.pad(low_dct_gt, (0, 0, 0, pad_len))
+        return low_dct_gt.to(dtype=actions.dtype)
 
     def _compute_motion_dct_loss(
         self,

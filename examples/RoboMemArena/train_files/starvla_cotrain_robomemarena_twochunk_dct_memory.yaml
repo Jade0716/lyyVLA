@@ -1,7 +1,7 @@
 run_id: robomemarena_qwen3.5-0.8b_twochunk_dct_memory
 run_root_dir: results/Checkpoints
 seed: 42
-wandb_entity: your_wandb_entity
+wandb_entity: jade0716-hefei-university-of-technology
 wandb_project: starVLA_RoboMemArena
 is_debug: false
 version_id: "0.21"

@@ -551,11 +551,17 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
             action_dim=int(self.config.framework.action_model.action_dim),
         )
 
-        batch_size = len(examples)
-        memory_tokens = self._online_memory_tokens(
-            batch_size,
-            action_token_hidden.device,
-            action_token_hidden.dtype,
+        summary, recent, summary_valid, recent_valid, summary_count = self._examples_dct_memory(
+            examples,
+            device=action_token_hidden.device,
+            dtype=action_token_hidden.dtype,
+        )
+        memory_tokens = self._dct_memory_tokens(
+            summary,
+            recent,
+            summary_valid,
+            recent_valid,
+            summary_count,
         )
 
         flat_frame_images = []
@@ -571,6 +577,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
         )
         pred_residual_actions = self.action_model.predict_action(fused_hidden)
 
+        batch_size = len(examples)
         pred_residual_actions = pred_residual_actions.view(num_refreshes, batch_size, self.fast_chunk_size, -1)
         pred_residual_actions = pred_residual_actions.permute(1, 0, 2, 3)
 
@@ -583,6 +590,5 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
 
         pred_actions = pred_residual_actions + coarse_chunks
         pred_actions = pred_actions.reshape(batch_size, num_refreshes * self.fast_chunk_size, -1)
-        self._update_online_memory(pred_actions)
         normalized_actions = pred_actions.detach().float().cpu().numpy()
         return {"normalized_actions": normalized_actions}

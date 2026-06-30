@@ -102,7 +102,7 @@ datasets:
     num_workers: 1
     multiprocessing_context: spawn
     persistent_workers: true
-    prefetch_factor: 1
+    prefetch_factor: 2
     dct_memory_cache_size: 32
 trainer:
   action_dit_loss_warmup: true

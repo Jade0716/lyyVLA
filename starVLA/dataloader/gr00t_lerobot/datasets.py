@@ -73,6 +73,17 @@ LE_ROBOT3_TASKS_FILENAME = "meta/tasks.parquet"
 LE_ROBOT3_EPISODE_FILENAME = "meta/episodes/*/*.parquet"
 
 
+def _read_parquet(path: Path | str) -> pd.DataFrame:
+    data = pd.read_parquet(path)
+    try:
+        import pyarrow as pa
+
+        pa.default_memory_pool().release_unused()
+    except Exception:
+        pass
+    return data
+
+
 def calculate_dataset_statistics(parquet_paths: list[Path]) -> dict:
     """Calculate the dataset statistics of all columns for a list of parquet files."""
     # Dataset statistics
@@ -84,7 +95,7 @@ def calculate_dataset_statistics(parquet_paths: list[Path]) -> dict:
         desc="Collecting all parquet files...",
     ):
         # Load the parquet file
-        parquet_data = pd.read_parquet(parquet_path)
+        parquet_data = _read_parquet(parquet_path)
         parquet_data = parquet_data
         all_low_dim_data_list.append(parquet_data)
 
@@ -412,7 +423,7 @@ def calculate_delta_action_statistics(
 
     accum: dict[str, list[np.ndarray]] = {col: [] for col in action_col_slices.keys()}
     for parquet_path in tqdm(sorted(list(parquet_paths)), desc="Collecting delta action stats"):
-        data = pd.read_parquet(parquet_path)
+        data = _read_parquet(parquet_path)
         trajectory_length = len(data)
         for action_col, slice_list in action_col_slices.items():
             if action_col not in data.columns:
@@ -510,7 +521,7 @@ def calculate_rel_action_statistics(
 
     accum: dict[str, list[np.ndarray]] = {col: [] for col in action_col_slices.keys()}
     for parquet_path in tqdm(sorted(list(parquet_paths)), desc="Collecting rel action stats"):
-        data = pd.read_parquet(parquet_path)
+        data = _read_parquet(parquet_path)
         trajectory_length = len(data)
         for action_col, slice_list in action_col_slices.items():
             if action_col not in data.columns:
@@ -925,7 +936,7 @@ class LeRobotSingleDataset(Dataset):
             # vido_from_index = []
             self.trajectory_ids_to_metadata = {}
             for file_path in file_paths:
-                episodes_data = pd.read_parquet(file_path)
+                episodes_data = _read_parquet(file_path)
                 timestamp_cols = [
                     c
                     for c in episodes_data.columns
@@ -1333,7 +1344,7 @@ class LeRobotSingleDataset(Dataset):
         
         elif self._lerobot_version == "v3.0":
             tasks_path = self.dataset_path / LE_ROBOT3_TASKS_FILENAME
-            df = pd.read_parquet(tasks_path)
+            df = _read_parquet(tasks_path)
             df = df.reset_index()  # convert index to a column, typically named 'index'
             df = df.rename(columns={'index': 'task'})  # rename 'index' column to 'task'
             df = df[['task_index', 'task']]  # reorder columns
@@ -1690,7 +1701,9 @@ class LeRobotSingleDataset(Dataset):
                     episode_chunk=chunk_index, episode_index=trajectory_id
                 )
                 assert parquet_path.exists(), f"Parquet file not found at {parquet_path}"
-                return pd.read_parquet(parquet_path)
+                self.curr_traj_data = _read_parquet(parquet_path)
+                self.curr_traj_id = trajectory_id
+                return self.curr_traj_data
         elif self._lerobot_version == "v3.0":
             return self.get_trajectory_data_lerobot_v3(trajectory_id)
     
@@ -1709,11 +1722,13 @@ class LeRobotSingleDataset(Dataset):
                 chunk_index=chunk_index, file_index=file_index
             )
             assert parquet_path.exists(), f"Parquet file not found at {parquet_path}"
-            file_data = pd.read_parquet(parquet_path)
+            file_data = _read_parquet(parquet_path)
             
             # filter by trajectory_id
             episode_data = file_data.loc[file_data["episode_index"] == trajectory_id].copy()
-            return episode_data
+            self.curr_traj_data = episode_data
+            self.curr_traj_id = trajectory_id
+            return self.curr_traj_data
 
 
     def get_trajectory_index(self, trajectory_id: int) -> int:

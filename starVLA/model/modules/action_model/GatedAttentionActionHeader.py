@@ -130,6 +130,8 @@ class GatedAttentionActionHead(nn.Module):
         num_heads: int = 8,
         use_rope: bool = True,
         adapter_token_count: int | None = None,
+        coarse_condition_query: bool = False,
+        zero_init_output: bool = False,
     ):
         super().__init__()
         self.input_dim = input_dim
@@ -139,6 +141,7 @@ class GatedAttentionActionHead(nn.Module):
         # Kept for backward-compatible configs. The current head attends over
         # all condition tokens directly instead of splitting a gated adapter path.
         self.adapter_token_count = adapter_token_count
+        self.coarse_condition_query = bool(coarse_condition_query)
 
         query_dim = input_dim * action_dim
         self.action_chunk_embeddings = nn.Parameter(torch.zeros(NUM_ACTIONS_CHUNK, query_dim))
@@ -146,6 +149,8 @@ class GatedAttentionActionHead(nn.Module):
 
         self.query_norm = nn.LayerNorm(query_dim)
         self.query_proj = nn.Linear(query_dim, hidden_dim)
+        if self.coarse_condition_query:
+            self.coarse_query_proj = nn.Linear(action_dim, hidden_dim)
         self.condition_proj = nn.Identity() if input_dim == hidden_dim else nn.Linear(input_dim, hidden_dim)
         self.blocks = nn.ModuleList(
             [
@@ -159,8 +164,15 @@ class GatedAttentionActionHead(nn.Module):
         )
         self.output_norm = nn.LayerNorm(hidden_dim)
         self.output_proj = nn.Linear(hidden_dim, action_dim)
+        if zero_init_output:
+            nn.init.zeros_(self.output_proj.weight)
+            nn.init.zeros_(self.output_proj.bias)
 
-    def predict_action(self, actions_hidden_states: torch.Tensor) -> torch.Tensor:
+    def predict_action(
+        self,
+        actions_hidden_states: torch.Tensor,
+        coarse_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         batch_size = actions_hidden_states.shape[0]
         condition = self.condition_proj(actions_hidden_states)
         query = self.action_chunk_embeddings.to(
@@ -169,9 +181,23 @@ class GatedAttentionActionHead(nn.Module):
         )
         query = query.unsqueeze(0).expand(batch_size, -1, -1)
         x = self.query_proj(self.query_norm(query))
+        if coarse_actions is not None:
+            if not self.coarse_condition_query:
+                raise ValueError("coarse_actions were provided but coarse_condition_query is disabled.")
+            if coarse_actions.shape[:2] != x.shape[:2] or coarse_actions.shape[-1] != self.action_dim:
+                raise ValueError(
+                    "coarse_actions must have shape [B, NUM_ACTIONS_CHUNK, action_dim], "
+                    f"got {tuple(coarse_actions.shape)} for query shape {tuple(x.shape)} "
+                    f"and action_dim={self.action_dim}."
+                )
+            x = x + self.coarse_query_proj(coarse_actions.to(device=x.device, dtype=x.dtype))
         for block in self.blocks:
             x = block(x, condition=condition)
         return self.output_proj(self.output_norm(x))
 
-    def forward(self, actions_hidden_states: torch.Tensor) -> torch.Tensor:
-        return self.predict_action(actions_hidden_states)
+    def forward(
+        self,
+        actions_hidden_states: torch.Tensor,
+        coarse_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        return self.predict_action(actions_hidden_states, coarse_actions=coarse_actions)

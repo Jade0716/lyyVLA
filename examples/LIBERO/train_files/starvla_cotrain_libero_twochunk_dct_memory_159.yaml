@@ -43,6 +43,7 @@ framework:
     chunk_len: 32
     chunk_keep_freq: 4
     summary_keep_freq: 8
+    recent_mode: raw_actions
     summary_count_embed_dim: 128
     action_dim: 7
     noise_enabled: true
@@ -54,6 +55,8 @@ framework:
     gated_num_heads: 8
     gated_use_rope: true
     gated_adapter_token_count: 16
+    coarse_condition_query: true
+    zero_init_output: true
     num_target_vision_tokens: 4
     action_model_type: DiT-B
     hidden_size: 1024
@@ -88,6 +91,7 @@ datasets:
     dct_memory_chunk_len: 32
     dct_memory_chunk_keep_freq: 4
     dct_memory_summary_keep_freq: 8
+    dct_memory_cache_mode: prefix-summary
     CoT_prompt: "The robot is franka with single arm. The control frequency is 20 Hz. Your task is: {instruction}. Based on the current visual observation and task instruction, summarize the low-frequency future motion trend of the next 32 control actions into 4 learnable action tokens, then use the current observation to refine the next 4 control actions."
     per_device_batch_size: 8
     load_all_data_for_training: true

@@ -119,6 +119,8 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
                 num_heads=int(action_cfg.get("gated_num_heads", 8)),
                 use_rope=_as_bool(action_cfg.get("gated_use_rope", True)),
                 adapter_token_count=int(action_cfg.get("gated_adapter_token_count", self.motion_dct_keep_freq)),
+                coarse_condition_query=_as_bool(action_cfg.get("coarse_condition_query", False)),
+                zero_init_output=_as_bool(action_cfg.get("zero_init_output", False)),
             )
         if head_type not in {"pooling_mlp", "mlp", "legacy"}:
             raise ValueError(

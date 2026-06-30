@@ -12,14 +12,14 @@ export NCCL_SOCKET_TIMEOUT_MS=360000
 ###########################################################################################
 # === Please modify the following paths according to your environment ===
 config_yaml=${config_yaml:-./examples/LIBERO/train_files/starvla_cotrain_libero_twochunk_dct_memory.yaml}
-run_id=${run_id:-liberogoal_qwen3.5-0.8b-twochunk-$(date +%Y%m%d_%H%M%S)}
+run_id=${run_id:-libero10_qwen3.5-0.8b-twochunk-$(date +%Y%m%d_%H%M%S)}
 LOG_TO_FILE=${LOG_TO_FILE:-1}
 # === End of environment variable configuration ===
 ###########################################################################################
 
 
 # export WANDB_MODE=disabled
-run_root_dir=${run_root_dir:-/16T/liuyuyan/lyyvla/results/Checkpoints}
+run_root_dir=${run_root_dir:-/15T/liuyuyan/lyyvla/results/Checkpoints}
 
 output_dir=${run_root_dir}/${run_id}
 mkdir -p "${output_dir}"
@@ -47,11 +47,11 @@ fi
 # mv this script to the output dir
 cp "$0" "${output_dir}/"
 
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-1}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,2}
 accelerate launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
-  --num_processes 1 \
-  --main_process_port 29501 \
+  --num_processes 2 \
+  --main_process_port 29500 \
   starVLA/training/train_starvla.py \
   --config_yaml ${config_yaml} \
   --trainer.vla_data.video_backend torchcodec \

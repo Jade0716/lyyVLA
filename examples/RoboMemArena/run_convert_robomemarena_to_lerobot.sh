@@ -21,8 +21,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LYYVLA_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 
-SOURCE_ROOT="${SOURCE_ROOT:-/16T/liuyuyan}"
-OUTPUT_DIR="${OUTPUT_DIR:-/16T/liuyuyan/robomemarena_lerobot}"
+SOURCE_ROOT="${SOURCE_ROOT:-/15T/liuyuyan}"
+OUTPUT_DIR="${OUTPUT_DIR:-/15T/liuyuyan/robomemarena_lerobot}"
 ROBOMEMARENA_REPO="${ROBOMEMARENA_REPO:-/home/liuyuyan/RoboMemArena}"
 CONDA_ENV="${CONDA_ENV:-lingbot}"
 TASKS="${TASKS:-auto}"

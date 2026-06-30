@@ -14,6 +14,7 @@
 # limitations under the License.
 
 
+import inspect
 import os
 
 import av
@@ -52,14 +53,25 @@ def _resolve_torchcodec_device(device: str) -> str:
     return device
 
 
+def _torchcodec_supports_kwarg(name: str) -> bool:
+    if not TORCHCODEC_AVAILABLE:
+        return False
+    try:
+        return name in inspect.signature(torchcodec.decoders.VideoDecoder.__init__).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def _torchcodec_kwargs(video_backend_kwargs: dict | None) -> dict:
     video_backend_kwargs = video_backend_kwargs or {}
-    return {
+    kwargs = {
         "device": _resolve_torchcodec_device(str(video_backend_kwargs.get("device", "cpu"))),
         "dimension_order": video_backend_kwargs.get("dimension_order", "NHWC"),
         "num_ffmpeg_threads": int(video_backend_kwargs.get("num_ffmpeg_threads", 1)),
-        "seek_mode": video_backend_kwargs.get("seek_mode", "exact"),
     }
+    if _torchcodec_supports_kwarg("seek_mode"):
+        kwargs["seek_mode"] = video_backend_kwargs.get("seek_mode", "exact")
+    return kwargs
 
 
 def _fallback_video_backend(video_backend_kwargs: dict | None) -> str:

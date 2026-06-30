@@ -66,9 +66,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
-        choices=("sliding-start", "global-chunks"),
-        default="sliding-start",
-        help="sliding-start stores summaries for every start frame; global-chunks stores starts 0, 32, 64, ...",
+        choices=("sliding-start", "global-chunks", "prefix-summary"),
+        default="prefix-summary",
+        help=(
+            "sliding-start stores summaries for every start frame; "
+            "global-chunks stores starts 0, 32, 64, ...; "
+            "prefix-summary stores one episode-prefix summary stream from frame 0."
+        ),
     )
     parser.add_argument(
         "--action-column",
@@ -179,6 +183,76 @@ def merge_summary(
     new_coarse = coarse_from_dct(new_chunk_dct, chunk_len, chunk_keep_freq)
     merged = np.concatenate([prev_coarse, new_coarse], axis=0)
     return dct(merged, type=2, axis=0, norm="ortho")[:summary_keep_freq].astype(np.float32)
+
+
+def build_prefix_summary_cache(
+    actions: np.ndarray,
+    chunk_len: int,
+    chunk_keep_freq: int,
+    summary_keep_freq: int,
+    storage_dtype: np.dtype,
+    store_coarse: bool,
+) -> dict[str, np.ndarray]:
+    episode_len, action_dim = actions.shape
+    if episode_len <= 0:
+        raise ValueError("Episode has no frames.")
+
+    num_complete_chunks = episode_len // chunk_len
+    chunk_dct = np.zeros((num_complete_chunks, chunk_keep_freq, action_dim), dtype=np.float32)
+    prefix_summary_dct = np.zeros((num_complete_chunks, summary_keep_freq, action_dim), dtype=np.float32)
+    prefix_summary_count = np.zeros((num_complete_chunks,), dtype=np.int16)
+    chunk_valid_lengths = np.full((num_complete_chunks,), chunk_len, dtype=np.int16)
+    valid_mask = np.ones((num_complete_chunks,), dtype=np.bool_)
+
+    chunk_coarse = None
+    if store_coarse:
+        chunk_coarse = np.zeros((num_complete_chunks, chunk_len, action_dim), dtype=np.float32)
+
+    summary = None
+    summary_count = 0
+    for chunk_idx in range(num_complete_chunks):
+        begin = chunk_idx * chunk_len
+        end = begin + chunk_len
+        coeff = low_dct(actions[begin:end], chunk_len, chunk_keep_freq)
+        if summary is None:
+            summary = np.zeros((summary_keep_freq, action_dim), dtype=np.float32)
+            copy_len = min(chunk_keep_freq, summary_keep_freq)
+            summary[:copy_len] = coeff[:copy_len]
+            summary_count = 1
+        else:
+            summary = merge_summary(
+                summary,
+                summary_count,
+                coeff,
+                chunk_len,
+                chunk_keep_freq,
+                summary_keep_freq,
+            )
+            summary_count += 1
+
+        chunk_dct[chunk_idx] = coeff
+        prefix_summary_dct[chunk_idx] = summary
+        prefix_summary_count[chunk_idx] = summary_count
+        if chunk_coarse is not None:
+            chunk_coarse[chunk_idx] = coarse_from_dct(coeff, chunk_len, chunk_keep_freq)
+
+    result = {
+        "cache_mode": np.asarray("prefix-summary"),
+        "episode_length": np.asarray(episode_len, dtype=np.int32),
+        "chunk_len": np.asarray(chunk_len, dtype=np.int32),
+        "chunk_keep_freq": np.asarray(chunk_keep_freq, dtype=np.int32),
+        "summary_keep_freq": np.asarray(summary_keep_freq, dtype=np.int32),
+        "action_dim": np.asarray(action_dim, dtype=np.int32),
+        "num_complete_chunks": np.asarray(num_complete_chunks, dtype=np.int32),
+        "valid_mask": valid_mask,
+        "chunk_valid_lengths": chunk_valid_lengths,
+        "chunk_dct": chunk_dct.astype(storage_dtype),
+        "prefix_summary_dct": prefix_summary_dct.astype(storage_dtype),
+        "prefix_summary_count": prefix_summary_count,
+    }
+    if chunk_coarse is not None:
+        result["chunk_coarse"] = chunk_coarse.astype(storage_dtype)
+    return result
 
 
 def build_episode_cache(
@@ -311,15 +385,25 @@ def main() -> None:
                 action_columns=action_columns,
                 clip_actions=not args.no_clip_actions,
             )
-            cache = build_episode_cache(
-                actions=actions,
-                chunk_len=args.chunk_len,
-                chunk_keep_freq=args.chunk_keep_freq,
-                summary_keep_freq=args.summary_keep_freq,
-                mode=args.mode,
-                storage_dtype=storage_dtype,
-                store_coarse=not args.no_store_coarse,
-            )
+            if args.mode == "prefix-summary":
+                cache = build_prefix_summary_cache(
+                    actions=actions,
+                    chunk_len=args.chunk_len,
+                    chunk_keep_freq=args.chunk_keep_freq,
+                    summary_keep_freq=args.summary_keep_freq,
+                    storage_dtype=storage_dtype,
+                    store_coarse=not args.no_store_coarse,
+                )
+            else:
+                cache = build_episode_cache(
+                    actions=actions,
+                    chunk_len=args.chunk_len,
+                    chunk_keep_freq=args.chunk_keep_freq,
+                    summary_keep_freq=args.summary_keep_freq,
+                    mode=args.mode,
+                    storage_dtype=storage_dtype,
+                    store_coarse=not args.no_store_coarse,
+                )
             cache["episode_index"] = np.asarray(episode_index, dtype=np.int32)
             np.savez_compressed(output_path, **cache)
             episodes_written += 1

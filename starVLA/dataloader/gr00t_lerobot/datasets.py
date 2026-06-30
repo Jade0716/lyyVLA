@@ -1480,7 +1480,8 @@ class LeRobotSingleDataset(Dataset):
         chunk_len = int(self.data_cfg.get("dct_memory_chunk_len", 32))
         chunk_keep = int(self.data_cfg.get("dct_memory_chunk_keep_freq", 4))
         summary_keep = int(self.data_cfg.get("dct_memory_summary_keep_freq", 8))
-        suffix = f"chunk{chunk_len}_recent{chunk_keep}_summary{summary_keep}_sliding-start"
+        cache_mode = str(self.data_cfg.get("dct_memory_cache_mode", "sliding-start"))
+        suffix = f"chunk{chunk_len}_recent{chunk_keep}_summary{summary_keep}_{cache_mode}"
         return self.dataset_path / "meta" / "dct_bank_cache" / suffix
 
     def _get_dct_memory_cache_size(self) -> int:
@@ -1527,6 +1528,36 @@ class LeRobotSingleDataset(Dataset):
             self._close_npz_cache(old_cache)
         return cache
 
+    def _dct_memory_action_matrix(self, trajectory_id: int, action_dim: int) -> np.ndarray:
+        if self.curr_traj_data is None or self.curr_traj_id != trajectory_id:
+            self.curr_traj_data = self.get_trajectory_data(trajectory_id)
+        action_parts = []
+        for action_key in self.modality_keys.get("action", []):
+            key = action_key.replace("action.", "", 1)
+            action_cfg = self.lerobot_modality_meta.action[key]
+            le_key = action_cfg.original_key or key
+            if le_key not in self.curr_traj_data.columns:
+                raise KeyError(f"{le_key} not found in trajectory {trajectory_id}.")
+            data_array = np.stack(self.curr_traj_data[le_key]).astype(np.float32)
+            indices = np.arange(action_cfg.start, action_cfg.end)
+            action_parts.append(data_array[:, indices])
+        if not action_parts:
+            raise ValueError("DCT memory requires action modalities to build raw recent memory.")
+        actions = np.concatenate(action_parts, axis=-1).astype(np.float32)
+        if actions.shape[-1] != action_dim:
+            actions = actions[:, :action_dim]
+        return np.clip(actions, -1.0, 1.0)
+
+    @staticmethod
+    def _left_pad_recent_actions(actions: np.ndarray, base_index: int, chunk_len: int, action_dim: int) -> np.ndarray:
+        recent = np.zeros((chunk_len, action_dim), dtype=np.float16)
+        start = max(0, int(base_index) - chunk_len)
+        end = max(0, int(base_index))
+        history = actions[start:end, :action_dim].astype(np.float16)
+        if len(history) > 0:
+            recent[-len(history) :] = history
+        return recent
+
     @staticmethod
     def _dct_memory_row_for_start(cache, start: int) -> int:
         start_indices = cache["start_indices"] if "start_indices" in cache else None
@@ -1563,6 +1594,9 @@ class LeRobotSingleDataset(Dataset):
             cache["keep_freq"] if "keep_freq" in cache else self.data_cfg.get("dct_memory_summary_keep_freq", 8)
         )
 
+        cache_mode = str(cache["cache_mode"]) if "cache_mode" in cache else str(
+            self.data_cfg.get("dct_memory_cache_mode", "sliding-start")
+        )
         usable_chunks = int(base_index) // chunk_len
         summary = np.zeros((summary_keep, action_dim), dtype=np.float16)
         recent = np.zeros((chunk_keep, action_dim), dtype=np.float16)
@@ -1571,20 +1605,33 @@ class LeRobotSingleDataset(Dataset):
         summary_count = 0
         memory_start = 0
 
-        if usable_chunks > 0:
-            memory_start = int(base_index) - usable_chunks * chunk_len
-            row = self._dct_memory_row_for_start(cache, memory_start)
-            recent_idx = usable_chunks - 1
-            recent = cache["chunk_dct"][row, recent_idx].astype(np.float16)
+        if cache_mode == "prefix-summary":
+            actions = self._dct_memory_action_matrix(trajectory_id, action_dim)
+            recent = self._left_pad_recent_actions(actions, base_index, chunk_len, action_dim)
             recent_valid = True
-            if usable_chunks >= 2:
-                summary_idx = usable_chunks - 2
-                summary = cache["prefix_summary_dct"][row, summary_idx].astype(np.float16)
+            if usable_chunks > 0 and cache["prefix_summary_dct"].shape[0] > 0:
+                summary_idx = min(usable_chunks, cache["prefix_summary_dct"].shape[0]) - 1
+                summary = cache["prefix_summary_dct"][summary_idx].astype(np.float16)
                 if "prefix_summary_count" in cache:
-                    summary_count = int(cache["prefix_summary_count"][row, summary_idx])
+                    summary_count = int(cache["prefix_summary_count"][summary_idx])
                 else:
-                    summary_count = usable_chunks - 1
+                    summary_count = summary_idx + 1
                 summary_valid = True
+        else:
+            if usable_chunks > 0:
+                memory_start = int(base_index) - usable_chunks * chunk_len
+                row = self._dct_memory_row_for_start(cache, memory_start)
+                recent_idx = usable_chunks - 1
+                recent = cache["chunk_dct"][row, recent_idx].astype(np.float16)
+                recent_valid = True
+                if usable_chunks >= 2:
+                    summary_idx = usable_chunks - 2
+                    summary = cache["prefix_summary_dct"][row, summary_idx].astype(np.float16)
+                    if "prefix_summary_count" in cache:
+                        summary_count = int(cache["prefix_summary_count"][row, summary_idx])
+                    else:
+                        summary_count = usable_chunks - 1
+                    summary_valid = True
 
         sample["dct_memory_summary"] = summary
         sample["dct_memory_recent"] = recent

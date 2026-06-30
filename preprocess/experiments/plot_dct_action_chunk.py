@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset-root",
         type=Path,
-        default=Path("/16T/liuyuyan/libero/libero_10_no_noops_1.0.0_lerobot"),
+        default=Path("/15T/liuyuyan/libero/libero_10_no_noops_1.0.0_lerobot"),
         help="LeRobot-format CALVIN dataset root.",
     )
     parser.add_argument(

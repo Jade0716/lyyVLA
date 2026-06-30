@@ -1,6 +1,6 @@
 import math
 import time
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import torch
@@ -14,6 +14,21 @@ from starVLA.model.framework.VLM4A.QwenGR00T_ActionToken_TwoChunk import (
 )
 from starVLA.model.tools import FRAMEWORK_REGISTRY
 from starVLA.training.trainer_utils.trainer_tools import resize_images
+
+
+def _as_noise_range(value) -> Optional[tuple[float, float]]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.split(",") if part.strip()]
+    else:
+        parts = list(value)
+    if len(parts) != 2:
+        raise ValueError(f"noise range must contain exactly two values, got {value}.")
+    low, high = float(parts[0]), float(parts[1])
+    if low < 0 or high < 0 or high < low:
+        raise ValueError(f"invalid noise range {value}; expected 0 <= low <= high.")
+    return low, high
 
 
 @FRAMEWORK_REGISTRY.register("QwenGR00T_ActionToken_TwoChunk_DCTMemory")
@@ -45,6 +60,8 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
         self.dct_memory_noise_enabled = _as_bool(memory_cfg.get("noise_enabled", True))
         self.dct_memory_summary_noise_std = float(memory_cfg.get("summary_noise_std", memory_cfg.get("noise_std", 0.01)))
         self.dct_memory_recent_noise_std = float(memory_cfg.get("recent_noise_std", memory_cfg.get("noise_std", 0.01)))
+        self.dct_memory_summary_noise_std_range = _as_noise_range(memory_cfg.get("summary_noise_std_range", None))
+        self.dct_memory_recent_noise_std_range = _as_noise_range(memory_cfg.get("recent_noise_std_range", None))
         self.dct_memory_count_embed_dim = int(memory_cfg.get("summary_count_embed_dim", 128))
         self.coarse_condition_query = bool(getattr(self.action_model, "coarse_condition_query", False))
 
@@ -185,11 +202,36 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if not self.training or not self.dct_memory_noise_enabled:
             return summary, recent
-        if self.dct_memory_summary_noise_std > 0:
-            noise = torch.randn_like(summary) * self.dct_memory_summary_noise_std
+
+        def _noise_scale(
+            tensor: torch.Tensor,
+            fixed_std: float,
+            std_range: Optional[tuple[float, float]],
+        ) -> Optional[torch.Tensor]:
+            if std_range is not None:
+                low, high = std_range
+                shape = (tensor.shape[0],) + (1,) * (tensor.ndim - 1)
+                return tensor.new_empty(shape).uniform_(low, high)
+            if fixed_std > 0:
+                return tensor.new_tensor(fixed_std)
+            return None
+
+        summary_scale = _noise_scale(
+            summary,
+            self.dct_memory_summary_noise_std,
+            self.dct_memory_summary_noise_std_range,
+        )
+        if summary_scale is not None:
+            noise = torch.randn_like(summary) * summary_scale
             summary = summary + noise * summary_valid[:, None, None].to(dtype=summary.dtype)
-        if self.dct_memory_recent_noise_std > 0 and not self.dct_memory_raw_recent:
-            noise = torch.randn_like(recent) * self.dct_memory_recent_noise_std
+
+        recent_scale = _noise_scale(
+            recent,
+            self.dct_memory_recent_noise_std,
+            self.dct_memory_recent_noise_std_range,
+        )
+        if recent_scale is not None:
+            noise = torch.randn_like(recent) * recent_scale
             recent = recent + noise * recent_valid[:, None, None].to(dtype=recent.dtype)
         return summary, recent
 

@@ -36,6 +36,31 @@ def _validate_twochunk_checkpoint(ckpt_path: str) -> None:
             f"{vision_refresh_steps}."
         )
 
+    if "DCTMemory" in framework_name:
+        dct_memory_cfg = framework_cfg.get("dct_memory", {})
+        recent_mode = str(dct_memory_cfg.get("recent_mode", "dct")).lower()
+        chunk_len = int(dct_memory_cfg.get("chunk_len", 32))
+        if recent_mode not in {"none", "raw", "raw_actions"}:
+            raise ValueError(
+                "TwoChunk DCTMemory eval expects framework.dct_memory.recent_mode="
+                f"none or raw_actions to match supported training modes, got {recent_mode!r}."
+            )
+        if chunk_len <= 0:
+            raise ValueError(f"framework.dct_memory.chunk_len must be positive, got {chunk_len}.")
+        if chunk_len % vision_refresh_steps != 0:
+            raise ValueError(
+                "DCTMemory chunk_len should be divisible by vision_refresh_steps so "
+                "online summary updates align with short chunks, got "
+                f"chunk_len={chunk_len}, vision_refresh_steps={vision_refresh_steps}."
+            )
+        vla_data_cfg = model_cfg.get("datasets", {}).get("vla_data", {})
+        cache_mode = str(vla_data_cfg.get("dct_memory_cache_mode", ""))
+        if cache_mode and cache_mode != "prefix-summary":
+            raise ValueError(
+                "TwoChunk DCTMemory eval expects datasets.vla_data.dct_memory_cache_mode="
+                f"prefix-summary to match current training, got {cache_mode!r}."
+            )
+
 
 def main(args: argparse.Namespace) -> None:
     _validate_twochunk_checkpoint(args.ckpt_path)

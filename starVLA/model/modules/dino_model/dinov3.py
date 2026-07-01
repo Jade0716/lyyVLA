@@ -87,31 +87,36 @@ class DINOv3BackBone(nn.Module):
             num_views = len(img_list[0]) if img_list else 0
             image_tensors = torch.stack(flat_tensors).view(len(img_list), num_views, *flat_tensors[0].shape)
 
+        image_tensors = self._ensure_view_dim(image_tensors)
         batch_size, num_views = image_tensors.shape[:2]
         device = next(self.parameters()).device
         if image_tensors.ndim != 5:
             raise ValueError(f"Expected 5D image tensor, got {tuple(image_tensors.shape)}")
+
         if image_tensors.shape[2] in (1, 3):
             _, _, channels, height, width = image_tensors.shape
-            image_tensors = image_tensors.view(batch_size * num_views, channels, height, width).to(
+            image_tensors = image_tensors.reshape(batch_size * num_views, channels, height, width).to(
                 device=device,
                 non_blocking=True,
             )
         elif image_tensors.shape[-1] in (1, 3):
             _, _, height, width, channels = image_tensors.shape
-            image_tensors = image_tensors.view(batch_size * num_views, height, width, channels).to(
+            image_tensors = image_tensors.reshape(batch_size * num_views, height, width, channels).to(
                 device=device,
                 non_blocking=True,
             )
             image_tensors = image_tensors.permute(0, 3, 1, 2).contiguous()
         else:
             raise ValueError(f"Cannot infer image channel dimension from shape {tuple(image_tensors.shape)}")
+
         if image_tensors.dtype == torch.uint8:
             image_tensors = image_tensors.to(dtype=torch.float32).div_(255.0)
         else:
             image_tensors = image_tensors.to(dtype=torch.float32)
             if image_tensors.max() > 1.0:
                 image_tensors = image_tensors / 255.0
+
+        height, width = image_tensors.shape[-2:]
         if height != self.input_size or width != self.input_size:
             image_tensors = F.interpolate(
                 image_tensors,
@@ -122,7 +127,19 @@ class DINOv3BackBone(nn.Module):
         return (image_tensors - self.dino_mean) / self.dino_std
 
     @staticmethod
+    def _ensure_view_dim(image_tensors: torch.Tensor) -> torch.Tensor:
+        if image_tensors.ndim == 4:
+            return image_tensors.unsqueeze(1)
+        return image_tensors
+
+    @staticmethod
     def _stack_views_fast(img_list) -> torch.Tensor | None:
+        if isinstance(img_list, torch.Tensor):
+            tensor = img_list.detach()
+            if tensor.ndim in (4, 5):
+                return tensor
+            return None
+
         if not img_list or not img_list[0]:
             return None
 

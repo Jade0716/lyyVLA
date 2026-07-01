@@ -1,5 +1,5 @@
 run_id: qwenact_twochunk_state_memory
-run_root_dir: /15T/liuyuyan/lyyvla/results/Checkpoints
+run_root_dir: /16T/liuyuyan/lyyvla/results/Checkpoints
 seed: 42
 wandb_entity: jade0716-hefei-university-of-technology
 wandb_project: 101_Libero
@@ -7,10 +7,10 @@ is_debug: false
 version_id: "0.21"
 
 framework:
-  name: QwenGR00T_ActionToken_TwoChunk_DCTMemory
+  name: QwenGR00T_ActionToken_TwoChunk
 
   qwenvl:
-    base_vlm: /15T/liuyuyan/Qwen3.5-0.8B
+    base_vlm: /16T/liuyuyan/Qwen/Qwen3.5-0.8B
     attn_implementation: flash_attention_2
     language_refresh_steps: 32
     vision_refresh_steps: 8
@@ -43,13 +43,15 @@ framework:
     chunk_len: 32
     chunk_keep_freq: 4
     summary_keep_freq: 8
-    recent_mode: raw_actions
+    recent_mode: none
     summary_count_embed_dim: 128
     action_dim: 7
     noise_enabled: true
     noise_std: 0.01
     summary_noise_std_range: [0.01, 0.03]
     recent_noise_std_range: [0.01, 0.03]
+    summary_dropout: 0.3
+    summary_gate: true
 
   action_model:
     action_head_type: gated_attention
@@ -85,7 +87,7 @@ datasets:
   vla_data:
     dataset_py: lerobot_datasets
     include_state: false
-    data_root_dir: /15T/liuyuyan/libero/
+    data_root_dir: /16T/liuyuyan/libero/
     data_mix: libero_10
     action_type: delta_qpos
     twochunk_training: true
@@ -105,10 +107,10 @@ datasets:
       fallback_backend: torchcodec_cpu
     balance_dataset_weights: true
     balance_trajectory_weights: true
-    num_workers: 4
-    multiprocessing_context: spawn
+    num_workers: 2
+    multiprocessing_context: fork
     persistent_workers: true
-    prefetch_factor: 4
+    prefetch_factor: 2
 trainer:
   action_dit_loss_warmup: true
   action_dit_loss_start_step: 10000

@@ -41,7 +41,31 @@ class TwoChunkModelClient(ModelClient):
             )
         self.twochunk_debug = twochunk_debug
         self.twochunk_debug_every_step = twochunk_debug_every_step
-        if self.language_refresh_steps > 0 and self.vision_refresh_steps > 0:
+        self.dct_memory_enabled = bool(meta.get("dct_memory", False)) or "DCTMemory" in framework_name
+        self.dct_memory_chunk_len = int(meta.get("dct_memory_chunk_len", self.language_refresh_steps))
+        self.dct_memory_recent_mode = str(meta.get("dct_memory_recent_mode", "")).lower()
+        self.dct_memory_cache_mode = str(meta.get("dct_memory_cache_mode", ""))
+        self.online_memory_strategy = str(meta.get("online_memory_strategy", ""))
+        if self.dct_memory_enabled:
+            if self.dct_memory_recent_mode not in {"none", "raw", "raw_actions"}:
+                raise ValueError(
+                    "TwoChunk DCTMemory client expects summary-only or raw-actions recent memory, "
+                    f"got dct_memory_recent_mode={self.dct_memory_recent_mode!r}; metadata={meta}."
+                )
+            if self.dct_memory_cache_mode and self.dct_memory_cache_mode != "prefix-summary":
+                raise ValueError(
+                    "TwoChunk DCTMemory client expects prefix-summary cache mode to match training, "
+                    f"got dct_memory_cache_mode={self.dct_memory_cache_mode!r}; metadata={meta}."
+                )
+            if self.dct_memory_chunk_len <= 0:
+                raise ValueError(f"Invalid dct_memory_chunk_len={self.dct_memory_chunk_len}.")
+            if self.dct_memory_chunk_len % self.vision_refresh_steps != 0:
+                raise ValueError(
+                    "dct_memory_chunk_len must be divisible by vision_refresh_steps for aligned "
+                    f"online memory updates, got {self.dct_memory_chunk_len} and {self.vision_refresh_steps}."
+                )
+            self.twochunk_short_chunks_per_long_window = self.dct_memory_chunk_len // self.vision_refresh_steps
+        elif self.language_refresh_steps > 0 and self.vision_refresh_steps > 0:
             if self.language_refresh_steps % self.vision_refresh_steps != 0:
                 raise ValueError(
                     "language_refresh_steps must be divisible by vision_refresh_steps, got "
@@ -109,6 +133,8 @@ class TwoChunkModelClient(ModelClient):
                     f"env_step={step}; reset_cache={reset_cache}; "
                     f"dino_refresh={self.vision_refresh_steps}; "
                     f"vlm_refresh={self.language_refresh_steps}; "
+                    f"dct_memory_chunk_len={self.dct_memory_chunk_len if self.dct_memory_enabled else 'n/a'}; "
+                    f"memory_strategy={self.online_memory_strategy or 'n/a'}; "
                     f"model_time={float(timing.get('model_inference_time_s', 0.0)):.4f}s"
                 )
         elif self.twochunk_debug_every_step:
@@ -137,7 +163,7 @@ class TwoChunkModelClient(ModelClient):
             if self.short_chunk_time_count > 0
             else 0.0
         )
-        long_window_steps = self.language_refresh_steps
+        long_window_steps = self.dct_memory_chunk_len if self.dct_memory_enabled else self.language_refresh_steps
         short_chunks_per_32_steps = (
             32.0 / float(self.vision_refresh_steps) if self.vision_refresh_steps > 0 else 0.0
         )
@@ -151,6 +177,11 @@ class TwoChunkModelClient(ModelClient):
             "vision_refresh_steps": self.vision_refresh_steps,
             "language_refresh_steps": self.language_refresh_steps,
             "vlm_cache_strategy": self._server_metadata.get("vlm_cache_strategy"),
+            "dct_memory": self.dct_memory_enabled,
+            "dct_memory_chunk_len": self.dct_memory_chunk_len if self.dct_memory_enabled else None,
+            "dct_memory_recent_mode": self.dct_memory_recent_mode if self.dct_memory_enabled else None,
+            "dct_memory_cache_mode": self.dct_memory_cache_mode if self.dct_memory_enabled else None,
+            "online_memory_strategy": self.online_memory_strategy if self.dct_memory_enabled else None,
             "avg_long_chunk_inference_time_s": long_avg_s,
             "total_long_chunk_inference_time_s": self.long_chunk_time_total_s,
             "long_chunk_inference_time_count": self.long_chunk_time_count,

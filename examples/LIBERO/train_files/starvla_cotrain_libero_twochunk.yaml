@@ -45,6 +45,8 @@ framework:
     gated_num_heads: 8
     gated_use_rope: true
     gated_adapter_token_count: 4
+    coarse_condition_query: true
+    zero_init_output: true
     num_target_vision_tokens: 4
     action_model_type: DiT-B
     hidden_size: 1024

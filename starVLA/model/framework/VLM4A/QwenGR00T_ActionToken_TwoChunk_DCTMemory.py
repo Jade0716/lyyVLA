@@ -55,8 +55,13 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
         self.dct_memory_chunk_keep_freq = int(memory_cfg.get("chunk_keep_freq", 4))
         self.dct_memory_summary_keep_freq = int(memory_cfg.get("summary_keep_freq", 8))
         self.dct_memory_action_dim = int(memory_cfg.get("action_dim", action_dim))
-        self.dct_memory_recent_mode = str(memory_cfg.get("recent_mode", "dct"))
-        self.dct_memory_raw_recent = self.dct_memory_recent_mode in {"raw", "raw_actions"}
+        self.dct_memory_recent_mode = str(memory_cfg.get("recent_mode", "dct")).lower()
+        self.dct_memory_recent_enabled = self.dct_memory_recent_mode not in {"none", "disabled", "off", "false", "0"}
+        self.dct_memory_raw_recent = self.dct_memory_recent_enabled and self.dct_memory_recent_mode in {"raw", "raw_actions"}
+        self.dct_memory_summary_dropout = float(memory_cfg.get("summary_dropout", memory_cfg.get("summary_dropout_prob", 0.0)))
+        if not 0.0 <= self.dct_memory_summary_dropout <= 1.0:
+            raise ValueError(f"summary_dropout must be in [0, 1], got {self.dct_memory_summary_dropout}.")
+        self.dct_memory_summary_gate = _as_bool(memory_cfg.get("summary_gate", False))
         self.dct_memory_noise_enabled = _as_bool(memory_cfg.get("noise_enabled", True))
         self.dct_memory_summary_noise_std = float(memory_cfg.get("summary_noise_std", memory_cfg.get("noise_std", 0.01)))
         self.dct_memory_recent_noise_std = float(memory_cfg.get("recent_noise_std", memory_cfg.get("noise_std", 0.01)))
@@ -76,6 +81,11 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
         if self.dct_memory_raw_recent:
             self.dct_recent_position_embedding = nn.Parameter(
                 torch.randn(self.dct_memory_chunk_len, hidden_size) * 0.02
+            )
+        if self.dct_memory_summary_gate:
+            self.dct_summary_gate_mlp = nn.Sequential(
+                nn.LayerNorm(hidden_size),
+                nn.Linear(hidden_size, 1),
             )
 
         self._online_summary_dct = None
@@ -134,7 +144,12 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
     def _examples_dct_memory(self, examples: List[dict], device: torch.device, dtype: torch.dtype):
         batch_size = len(examples)
         summary_shape = (batch_size, self.dct_memory_summary_keep_freq, self.dct_memory_action_dim)
-        recent_len = self.dct_memory_chunk_len if self.dct_memory_raw_recent else self.dct_memory_chunk_keep_freq
+        if not self.dct_memory_recent_enabled:
+            recent_len = 0
+        elif self.dct_memory_raw_recent:
+            recent_len = self.dct_memory_chunk_len
+        else:
+            recent_len = self.dct_memory_chunk_keep_freq
         recent_shape = (batch_size, recent_len, self.dct_memory_action_dim)
 
         if not examples or "dct_memory_summary" not in examples[0]:
@@ -150,21 +165,27 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
             device=device,
             dtype=dtype,
         )
-        recent = torch.as_tensor(
-            np.asarray([example["dct_memory_recent"] for example in examples]),
-            device=device,
-            dtype=dtype,
-        )
+        if self.dct_memory_recent_enabled:
+            recent = torch.as_tensor(
+                np.asarray([example["dct_memory_recent"] for example in examples]),
+                device=device,
+                dtype=dtype,
+            )
+        else:
+            recent = torch.zeros(recent_shape, device=device, dtype=dtype)
         summary_valid = torch.as_tensor(
             np.asarray([example.get("dct_memory_summary_valid", False) for example in examples]),
             device=device,
             dtype=torch.bool,
         )
-        recent_valid = torch.as_tensor(
-            np.asarray([example.get("dct_memory_recent_valid", False) for example in examples]),
-            device=device,
-            dtype=torch.bool,
-        )
+        if self.dct_memory_recent_enabled:
+            recent_valid = torch.as_tensor(
+                np.asarray([example.get("dct_memory_recent_valid", False) for example in examples]),
+                device=device,
+                dtype=torch.bool,
+            )
+        else:
+            recent_valid = torch.zeros((batch_size,), device=device, dtype=torch.bool)
         summary_count = torch.as_tensor(
             np.asarray([example.get("dct_memory_summary_count", 0) for example in examples]),
             device=device,
@@ -225,11 +246,13 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
             noise = torch.randn_like(summary) * summary_scale
             summary = summary + noise * summary_valid[:, None, None].to(dtype=summary.dtype)
 
-        recent_scale = _noise_scale(
-            recent,
-            self.dct_memory_recent_noise_std,
-            self.dct_memory_recent_noise_std_range,
-        )
+        recent_scale = None
+        if self.dct_memory_recent_enabled and recent.numel() > 0:
+            recent_scale = _noise_scale(
+                recent,
+                self.dct_memory_recent_noise_std,
+                self.dct_memory_recent_noise_std_range,
+            )
         if recent_scale is not None:
             noise = torch.randn_like(recent) * recent_scale
             recent = recent + noise * recent_valid[:, None, None].to(dtype=recent.dtype)
@@ -250,21 +273,28 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
         summary_tokens = self.dct_summary_proj(
             summary.to(dtype=self.dct_summary_proj.weight.dtype)
         ).to(dtype=summary.dtype)
-        recent_tokens = self.dct_recent_proj(
-            recent.to(dtype=self.dct_recent_proj.weight.dtype)
-        ).to(dtype=recent.dtype)
         summary_count_embed = self._summary_count_embedding(
             summary_count,
             dtype=summary_tokens.dtype,
         )
 
         summary_mask = summary_valid[:, None, None].to(dtype=summary_tokens.dtype)
-        recent_mask = recent_valid[:, None, None].to(dtype=recent_tokens.dtype)
+        if self.training and self.dct_memory_summary_dropout > 0.0:
+            keep = torch.rand_like(summary_valid.float()) >= self.dct_memory_summary_dropout
+            summary_mask = summary_mask * keep[:, None, None].to(dtype=summary_tokens.dtype)
         summary_tokens = (
             summary_tokens
             + self.dct_memory_type_embedding[0].view(1, 1, -1)
             + summary_count_embed[:, None, :]
         ) * summary_mask
+
+        if not self.dct_memory_recent_enabled:
+            return summary_tokens
+
+        recent_tokens = self.dct_recent_proj(
+            recent.to(dtype=self.dct_recent_proj.weight.dtype)
+        ).to(dtype=recent.dtype)
+        recent_mask = recent_valid[:, None, None].to(dtype=recent_tokens.dtype)
         recent_tokens = recent_tokens + self.dct_memory_type_embedding[1].view(1, 1, -1)
         if self.dct_memory_raw_recent:
             recent_tokens = recent_tokens + self.dct_recent_position_embedding.to(
@@ -273,6 +303,19 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
             ).view(1, self.dct_memory_chunk_len, -1)
         recent_tokens = recent_tokens * recent_mask
         return torch.cat([summary_tokens, recent_tokens], dim=1)
+
+    def _gate_memory_tokens(
+        self,
+        action_token_hidden: torch.Tensor,
+        memory_tokens: torch.Tensor,
+    ) -> torch.Tensor:
+        if not self.dct_memory_summary_gate or memory_tokens.numel() == 0:
+            return memory_tokens
+        pooled = action_token_hidden.mean(dim=1)
+        gate = torch.sigmoid(
+            self.dct_summary_gate_mlp(pooled.to(dtype=next(self.dct_summary_gate_mlp.parameters()).dtype))
+        ).to(device=memory_tokens.device, dtype=memory_tokens.dtype)
+        return memory_tokens * gate[:, None, :]
 
     def _build_action_condition_with_memory(
         self,
@@ -286,6 +329,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
             dtype=action_token_hidden.dtype,
             image_tensors=dino_image_tensors,
         ).to(device=action_token_hidden.device)
+        memory_tokens = self._gate_memory_tokens(action_token_hidden, memory_tokens)
         return torch.cat([action_token_hidden, memory_tokens, dino_hidden], dim=1)
 
     def forward(
@@ -412,8 +456,9 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
 
     def _online_memory_tokens(self, batch_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
         summary_shape = (batch_size, self.dct_memory_summary_keep_freq, self.dct_memory_action_dim)
-        if self.dct_memory_raw_recent:
-            recent_shape = (batch_size, self.dct_memory_chunk_len, self.dct_memory_action_dim)
+        if self.dct_memory_raw_recent or not self.dct_memory_recent_enabled:
+            recent_len = self.dct_memory_chunk_len if self.dct_memory_raw_recent else 0
+            recent_shape = (batch_size, recent_len, self.dct_memory_action_dim)
             summary = (
                 self._online_summary_dct.to(device=device, dtype=dtype)
                 if self._online_summary_dct is not None
@@ -421,7 +466,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
             )
             recent = (
                 self._online_recent_actions.to(device=device, dtype=dtype)
-                if self._online_recent_actions is not None
+                if self.dct_memory_raw_recent and self._online_recent_actions is not None
                 else torch.zeros(recent_shape, device=device, dtype=dtype)
             )
             summary_valid = torch.full(
@@ -430,7 +475,12 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
                 device=device,
                 dtype=torch.bool,
             )
-            recent_valid = torch.ones((batch_size,), device=device, dtype=torch.bool)
+            recent_valid = torch.full(
+                (batch_size,),
+                self.dct_memory_raw_recent,
+                device=device,
+                dtype=torch.bool,
+            )
             summary_count = torch.full(
                 (batch_size,),
                 self._online_completed_chunks,
@@ -491,18 +541,21 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
                     f"gripper_minmax=({float(gripper.min()):.4f}, {float(gripper.max()):.4f}) "
                     f"gripper_out_of_train_range={gripper_out_of_train_range}"
                 )
+            actions = actions.clone()
+            actions[..., 6] = actions[..., 6].clamp(0.0, 1.0)
 
-        if self.dct_memory_raw_recent:
-            if self._online_recent_actions is None:
-                self._online_recent_actions = actions.new_zeros(
-                    actions.shape[0],
-                    self.dct_memory_chunk_len,
-                    self.dct_memory_action_dim,
-                )
-            self._online_recent_actions = torch.cat(
-                [self._online_recent_actions.to(actions.device), actions],
-                dim=1,
-            )[:, -self.dct_memory_chunk_len :, :]
+        if self.dct_memory_raw_recent or not self.dct_memory_recent_enabled:
+            if self.dct_memory_raw_recent:
+                if self._online_recent_actions is None:
+                    self._online_recent_actions = actions.new_zeros(
+                        actions.shape[0],
+                        self.dct_memory_chunk_len,
+                        self.dct_memory_action_dim,
+                    )
+                self._online_recent_actions = torch.cat(
+                    [self._online_recent_actions.to(actions.device), actions],
+                    dim=1,
+                )[:, -self.dct_memory_chunk_len :, :]
 
             if self._online_summary_pending_actions is None:
                 self._online_summary_pending_actions = actions

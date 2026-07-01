@@ -363,6 +363,8 @@ class VLATrainer(TrainerUtils):
             ):
                 step_metrics = self.eval_action_model(step_metrics)
 
+            step_metrics["timing/data"] = t_end_data - t_start_data
+            step_metrics["timing/model"] = t_end_model - t_start_model
             self._log_metrics(step_metrics)
 
             if (

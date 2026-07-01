@@ -68,8 +68,12 @@ class PolicyServerWrapper:
         self._framework_name = str(framework_name)
         action_model_cfg = framework_cfg["action_model"]
         qwenvl_cfg = framework_cfg.get("qwenvl", {})
+        dct_memory_cfg = framework_cfg.get("dct_memory", {})
         vla_data_cfg = model_cfg.get("datasets", {}).get("vla_data", {})
         self._include_state = _config_flag(vla_data_cfg.get("include_state", False))
+        self._dct_memory_enabled = "DCTMemory" in self._framework_name
+        self._dct_memory_cfg = dct_memory_cfg if isinstance(dct_memory_cfg, dict) else {}
+        self._dct_memory_cache_mode = str(vla_data_cfg.get("dct_memory_cache_mode", ""))
         self._language_refresh_steps = None
         self._vision_refresh_steps = None
 
@@ -148,6 +152,32 @@ class PolicyServerWrapper:
                     "vision_refresh_steps": self._vision_refresh_steps,
                     "language_refresh_steps": self._language_refresh_steps,
                     "vlm_cache_strategy": "action_token_hidden_cache_bank",
+                }
+            )
+        if self._dct_memory_enabled:
+            chunk_len = int(self._dct_memory_cfg.get("chunk_len", 32))
+            recent_mode = str(self._dct_memory_cfg.get("recent_mode", "dct")).lower()
+            summary_keep_freq = int(self._dct_memory_cfg.get("summary_keep_freq", 8))
+            chunk_keep_freq = int(self._dct_memory_cfg.get("chunk_keep_freq", 4))
+            recent_disabled = recent_mode in {"none", "disabled", "off", "false", "0"}
+            recent_tokens = 0 if recent_disabled else (chunk_len if recent_mode in {"raw", "raw_actions"} else chunk_keep_freq)
+            if recent_disabled:
+                online_memory_strategy = "prefix_summary_only"
+            elif recent_mode in {"raw", "raw_actions"}:
+                online_memory_strategy = "prefix_summary_raw_recent"
+            else:
+                online_memory_strategy = "legacy_dct_recent"
+            base.update(
+                {
+                    "dct_memory": True,
+                    "dct_memory_chunk_len": chunk_len,
+                    "dct_memory_recent_mode": recent_mode,
+                    "dct_memory_recent_tokens": recent_tokens,
+                    "dct_memory_summary_keep_freq": summary_keep_freq,
+                    "dct_memory_summary_tokens": summary_keep_freq,
+                    "dct_memory_chunk_keep_freq": chunk_keep_freq,
+                    "dct_memory_cache_mode": self._dct_memory_cache_mode,
+                    "online_memory_strategy": online_memory_strategy,
                 }
             )
         # Enrich with per-embodiment keys when a default processor already exists.

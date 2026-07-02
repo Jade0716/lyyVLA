@@ -90,7 +90,12 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
             hidden_size=hidden_size,
             action_dim=action_dim,
         )
+        action_cfg = self.config.framework.get("action_model", {})
         self.coarse_condition_query = bool(getattr(self.action_model, "coarse_condition_query", False))
+        self.coarse_condition_tokens = _as_bool(action_cfg.get("coarse_condition_tokens", False))
+        if self.coarse_condition_tokens:
+            self.coarse_condition_proj = nn.Linear(action_dim, hidden_size, bias=False)
+            self.coarse_condition_type_embedding = nn.Parameter(torch.randn(1, 1, hidden_size) * 0.02)
         self.l1_loss = nn.L1Loss()
 
         self._cached_action_token_hidden = None
@@ -236,14 +241,41 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         action_token_hidden: torch.Tensor,
         frame_images: List,
         dino_image_tensors: torch.Tensor | None = None,
+        coarse_actions: torch.Tensor | None = None,
     ) -> torch.Tensor:
         dino_hidden = self._encode_dino_hidden_states(
             batch_images=frame_images,
             dtype=action_token_hidden.dtype,
             image_tensors=dino_image_tensors,
         ).to(device=action_token_hidden.device)
-        condition_hidden = torch.cat([action_token_hidden, dino_hidden], dim=1)
+        condition_parts = [action_token_hidden]
+        coarse_tokens = self._project_coarse_condition_tokens(
+            coarse_actions,
+            dtype=action_token_hidden.dtype,
+        )
+        if coarse_tokens is not None:
+            condition_parts.append(coarse_tokens)
+        condition_parts.append(dino_hidden)
+        condition_hidden = torch.cat(condition_parts, dim=1)
         return condition_hidden
+
+    def _project_coarse_condition_tokens(
+        self,
+        coarse_actions: torch.Tensor | None,
+        dtype: torch.dtype,
+    ) -> torch.Tensor | None:
+        if not self.coarse_condition_tokens:
+            return None
+        if coarse_actions is None:
+            raise ValueError("coarse_condition_tokens=true requires coarse_actions.")
+        tokens = self.coarse_condition_proj(
+            coarse_actions.to(
+                device=self.coarse_condition_proj.weight.device,
+                dtype=self.coarse_condition_proj.weight.dtype,
+            )
+        ).to(device=coarse_actions.device, dtype=dtype)
+        type_embedding = self.coarse_condition_type_embedding.to(device=tokens.device, dtype=tokens.dtype)
+        return tokens + type_embedding
 
     @staticmethod
     def _first_refresh_images(image_sequences: List[List]) -> List[List]:
@@ -329,17 +361,22 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
             coarse_action_chunks.append(coarse_chunk)
 
         flat_action_token_hidden = action_token_hidden.repeat(num_refreshes, 1, 1)
+        flat_coarse_actions = torch.cat(coarse_action_chunks, dim=0).to(
+            device=flat_action_token_hidden.device,
+            dtype=flat_action_token_hidden.dtype,
+        )
         dino_image_tensors = self.dino_encoder.prepare_dino_input(flat_frame_images)
         fused_hidden = self._build_action_condition(
             flat_action_token_hidden,
             flat_frame_images,
             dino_image_tensors=dino_image_tensors,
+            coarse_actions=flat_coarse_actions,
         )
         residual_action_targets = torch.cat(residual_action_targets, dim=0).to(
             device=fused_hidden.device,
             dtype=fused_hidden.dtype,
         )
-        flat_coarse_actions = torch.cat(coarse_action_chunks, dim=0).to(
+        flat_coarse_actions = flat_coarse_actions.to(
             device=fused_hidden.device,
             dtype=fused_hidden.dtype,
         )
@@ -461,14 +498,15 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         dino_image_tensors = self.dino_encoder.prepare_dino_input(batch_images)
         self._sync_cuda_if_needed()
         fast_start = time.perf_counter()
+        action_dim = int(self.config.framework.action_model.action_dim)
+        coarse_action = self._coarse_with_gripper_pad(self._cached_coarse_action, action_dim)
+        coarse_chunk = coarse_action[:, start:end, :]
         fused_hidden = self._build_action_condition(
             self._cached_action_token_hidden,
             batch_images,
             dino_image_tensors=dino_image_tensors,
+            coarse_actions=coarse_chunk,
         )
-        action_dim = int(self.config.framework.action_model.action_dim)
-        coarse_action = self._coarse_with_gripper_pad(self._cached_coarse_action, action_dim)
-        coarse_chunk = coarse_action[:, start:end, :]
         with torch.autocast("cuda", dtype=torch.float32):
             pred_residual_actions = self.action_model.predict_action(
                 fused_hidden,
@@ -553,7 +591,6 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
             flat_frame_images.extend([image_sequence[refresh_i] for image_sequence in image_sequences])
 
         flat_action_token_hidden = action_token_hidden.repeat(num_refreshes, 1, 1)
-        fused_hidden = self._build_action_condition(flat_action_token_hidden, flat_frame_images)
         batch_size = len(examples)
         coarse_chunks = []
         for refresh_i in range(num_refreshes):
@@ -565,7 +602,13 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
             num_refreshes * batch_size,
             self.fast_chunk_size,
             -1,
-        ).to(device=fused_hidden.device, dtype=fused_hidden.dtype)
+        ).to(device=flat_action_token_hidden.device, dtype=flat_action_token_hidden.dtype)
+        fused_hidden = self._build_action_condition(
+            flat_action_token_hidden,
+            flat_frame_images,
+            coarse_actions=flat_coarse_actions,
+        )
+        flat_coarse_actions = flat_coarse_actions.to(device=fused_hidden.device, dtype=fused_hidden.dtype)
         pred_residual_actions = self.action_model.predict_action(
             fused_hidden,
             coarse_actions=flat_coarse_actions if self.coarse_condition_query else None,

@@ -59,7 +59,9 @@ framework:
     gated_num_heads: 8
     gated_use_rope: true
     gated_adapter_token_count: 16
-    coarse_condition_query: true
+    coarse_condition_query: false
+    coarse_condition_tokens: true
+    coarse_action_side_tokens: true
     zero_init_output: true
     num_target_vision_tokens: 4
     action_model_type: DiT-B
@@ -137,7 +139,7 @@ trainer:
     vlm: 0.1
   max_grad_norm: 1.0
   weight_decay: 0.0
-  logging_frequency: 10
+  logging_frequency: 100
   log_actiontoken_grad_norm: false
   grad_norm_logging_frequency: 100
   gradient_clipping: 1.0

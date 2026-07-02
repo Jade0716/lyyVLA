@@ -131,6 +131,7 @@ class GatedAttentionActionHead(nn.Module):
         use_rope: bool = True,
         adapter_token_count: int | None = None,
         coarse_condition_query: bool = False,
+        coarse_action_side_tokens: bool = False,
         zero_init_output: bool = False,
     ):
         super().__init__()
@@ -142,6 +143,7 @@ class GatedAttentionActionHead(nn.Module):
         # all condition tokens directly instead of splitting a gated adapter path.
         self.adapter_token_count = adapter_token_count
         self.coarse_condition_query = bool(coarse_condition_query)
+        self.coarse_action_side_tokens = bool(coarse_action_side_tokens)
 
         query_dim = input_dim * action_dim
         self.action_chunk_embeddings = nn.Parameter(torch.zeros(NUM_ACTIONS_CHUNK, query_dim))
@@ -151,6 +153,9 @@ class GatedAttentionActionHead(nn.Module):
         self.query_proj = nn.Linear(query_dim, hidden_dim)
         if self.coarse_condition_query:
             self.coarse_query_proj = nn.Linear(action_dim, hidden_dim)
+        if self.coarse_action_side_tokens:
+            self.coarse_action_side_proj = nn.Linear(action_dim, hidden_dim)
+            self.coarse_action_side_type_embedding = nn.Parameter(torch.randn(1, 1, hidden_dim) * 0.02)
         self.condition_proj = nn.Identity() if input_dim == hidden_dim else nn.Linear(input_dim, hidden_dim)
         self.blocks = nn.ModuleList(
             [
@@ -182,17 +187,33 @@ class GatedAttentionActionHead(nn.Module):
         query = query.unsqueeze(0).expand(batch_size, -1, -1)
         x = self.query_proj(self.query_norm(query))
         if coarse_actions is not None:
-            if not self.coarse_condition_query:
-                raise ValueError("coarse_actions were provided but coarse_condition_query is disabled.")
+            if not (self.coarse_condition_query or self.coarse_action_side_tokens):
+                raise ValueError(
+                    "coarse_actions were provided but both coarse_condition_query and "
+                    "coarse_action_side_tokens are disabled."
+                )
             if coarse_actions.shape[:2] != x.shape[:2] or coarse_actions.shape[-1] != self.action_dim:
                 raise ValueError(
                     "coarse_actions must have shape [B, NUM_ACTIONS_CHUNK, action_dim], "
                     f"got {tuple(coarse_actions.shape)} for query shape {tuple(x.shape)} "
                     f"and action_dim={self.action_dim}."
                 )
-            x = x + self.coarse_query_proj(coarse_actions.to(device=x.device, dtype=x.dtype))
+            coarse_actions = coarse_actions.to(device=x.device, dtype=x.dtype)
+            if self.coarse_condition_query:
+                x = x + self.coarse_query_proj(coarse_actions)
+            if self.coarse_action_side_tokens:
+                coarse_tokens = self.coarse_action_side_proj(coarse_actions)
+                type_embedding = self.coarse_action_side_type_embedding.to(
+                    device=coarse_tokens.device,
+                    dtype=coarse_tokens.dtype,
+                )
+                x = torch.cat([x, coarse_tokens + type_embedding], dim=1)
+        elif self.coarse_action_side_tokens:
+            raise ValueError("coarse_action_side_tokens=true requires coarse_actions.")
+
         for block in self.blocks:
             x = block(x, condition=condition)
+        x = x[:, : self.NUM_ACTIONS_CHUNK, :]
         return self.output_proj(self.output_norm(x))
 
     def forward(

@@ -323,6 +323,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
         memory_tokens: torch.Tensor,
         frame_images: List,
         dino_image_tensors: torch.Tensor | None = None,
+        coarse_actions: torch.Tensor | None = None,
     ) -> torch.Tensor:
         dino_hidden = self._encode_dino_hidden_states(
             batch_images=frame_images,
@@ -330,7 +331,15 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
             image_tensors=dino_image_tensors,
         ).to(device=action_token_hidden.device)
         memory_tokens = self._gate_memory_tokens(action_token_hidden, memory_tokens)
-        return torch.cat([action_token_hidden, memory_tokens, dino_hidden], dim=1)
+        condition_parts = [action_token_hidden]
+        coarse_tokens = self._project_coarse_condition_tokens(
+            coarse_actions,
+            dtype=action_token_hidden.dtype,
+        )
+        if coarse_tokens is not None:
+            condition_parts.append(coarse_tokens)
+        condition_parts.extend([memory_tokens, dino_hidden])
+        return torch.cat(condition_parts, dim=1)
 
     def forward(
         self,
@@ -405,18 +414,23 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
 
         flat_action_token_hidden = action_token_hidden.repeat(num_refreshes, 1, 1)
         flat_memory_tokens = memory_tokens.repeat(num_refreshes, 1, 1)
+        flat_coarse_actions = torch.cat(coarse_action_chunks, dim=0).to(
+            device=flat_action_token_hidden.device,
+            dtype=flat_action_token_hidden.dtype,
+        )
         dino_image_tensors = self.dino_encoder.prepare_dino_input(flat_frame_images)
         fused_hidden = self._build_action_condition_with_memory(
             flat_action_token_hidden,
             flat_memory_tokens,
             flat_frame_images,
             dino_image_tensors=dino_image_tensors,
+            coarse_actions=flat_coarse_actions,
         )
         residual_action_targets = torch.cat(residual_action_targets, dim=0).to(
             device=fused_hidden.device,
             dtype=fused_hidden.dtype,
         )
-        flat_coarse_actions = torch.cat(coarse_action_chunks, dim=0).to(
+        flat_coarse_actions = flat_coarse_actions.to(
             device=fused_hidden.device,
             dtype=fused_hidden.dtype,
         )
@@ -683,15 +697,16 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
             self._cached_action_token_hidden.device,
             self._cached_action_token_hidden.dtype,
         )
+        action_dim = int(self.config.framework.action_model.action_dim)
+        coarse_action = self._coarse_with_gripper_pad(self._cached_coarse_action, action_dim)
+        coarse_chunk = coarse_action[:, start:end, :]
         fused_hidden = self._build_action_condition_with_memory(
             self._cached_action_token_hidden,
             memory_tokens,
             batch_images,
             dino_image_tensors=dino_image_tensors,
+            coarse_actions=coarse_chunk,
         )
-        action_dim = int(self.config.framework.action_model.action_dim)
-        coarse_action = self._coarse_with_gripper_pad(self._cached_coarse_action, action_dim)
-        coarse_chunk = coarse_action[:, start:end, :]
         with torch.autocast("cuda", dtype=torch.float32):
             pred_residual_actions = self.action_model.predict_action(
                 fused_hidden,
@@ -785,17 +800,19 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
             coarse_chunks.append(coarse_long_action[:, start:end, :])
         coarse_chunks = torch.stack(coarse_chunks, dim=1)
 
-        fused_hidden = self._build_action_condition_with_memory(
-            flat_action_token_hidden,
-            flat_memory_tokens,
-            flat_frame_images,
-        )
         batch_size = len(examples)
         flat_coarse_actions = coarse_chunks.permute(1, 0, 2, 3).reshape(
             num_refreshes * batch_size,
             self.fast_chunk_size,
             -1,
-        ).to(device=fused_hidden.device, dtype=fused_hidden.dtype)
+        ).to(device=flat_action_token_hidden.device, dtype=flat_action_token_hidden.dtype)
+        fused_hidden = self._build_action_condition_with_memory(
+            flat_action_token_hidden,
+            flat_memory_tokens,
+            flat_frame_images,
+            coarse_actions=flat_coarse_actions,
+        )
+        flat_coarse_actions = flat_coarse_actions.to(device=fused_hidden.device, dtype=fused_hidden.dtype)
         pred_residual_actions = self.action_model.predict_action(
             fused_hidden,
             coarse_actions=flat_coarse_actions if self.coarse_condition_query else None,

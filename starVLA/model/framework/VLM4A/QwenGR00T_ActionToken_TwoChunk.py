@@ -92,6 +92,8 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         )
         action_cfg = self.config.framework.get("action_model", {})
         self.coarse_condition_query = bool(getattr(self.action_model, "coarse_condition_query", False))
+        self.coarse_action_side_tokens = bool(getattr(self.action_model, "coarse_action_side_tokens", False))
+        self.coarse_actions_for_action_head = self.coarse_condition_query or self.coarse_action_side_tokens
         self.coarse_condition_tokens = _as_bool(action_cfg.get("coarse_condition_tokens", False))
         if self.coarse_condition_tokens:
             self.coarse_condition_proj = nn.Linear(action_dim, hidden_size, bias=False)
@@ -384,7 +386,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         with torch.autocast("cuda", dtype=torch.float32):
             pred_residual_actions = self.action_model.predict_action(
                 fused_hidden,
-                coarse_actions=flat_coarse_actions if self.coarse_condition_query else None,
+                coarse_actions=flat_coarse_actions if self.coarse_actions_for_action_head else None,
             )
             action_loss = self.l1_loss(pred_residual_actions, residual_action_targets)
 
@@ -510,7 +512,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         with torch.autocast("cuda", dtype=torch.float32):
             pred_residual_actions = self.action_model.predict_action(
                 fused_hidden,
-                coarse_actions=coarse_chunk if self.coarse_condition_query else None,
+                coarse_actions=coarse_chunk if self.coarse_actions_for_action_head else None,
             )
         pred_actions = pred_residual_actions + coarse_chunk
         self._sync_cuda_if_needed()
@@ -611,7 +613,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         flat_coarse_actions = flat_coarse_actions.to(device=fused_hidden.device, dtype=fused_hidden.dtype)
         pred_residual_actions = self.action_model.predict_action(
             fused_hidden,
-            coarse_actions=flat_coarse_actions if self.coarse_condition_query else None,
+            coarse_actions=flat_coarse_actions if self.coarse_actions_for_action_head else None,
         )
 
         pred_residual_actions = pred_residual_actions.view(num_refreshes, batch_size, self.fast_chunk_size, -1)

@@ -7,7 +7,7 @@ is_debug: false
 version_id: "0.21"
 
 framework:
-  name: QwenGR00T_ActionToken_TwoChunk_DCTMemory
+  name: QwenGR00T_ActionToken_TwoChunk_DCTMemory_ActionSideCoarse
 
   qwenvl:
     base_vlm: /mnt/4T_disk/16T/liuyuyan/Qwen/Qwen3.5-0.8B
@@ -60,7 +60,7 @@ framework:
     gated_use_rope: true
     gated_adapter_token_count: 16
     coarse_condition_query: false
-    coarse_condition_tokens: true
+    coarse_condition_tokens: false
     coarse_action_side_tokens: true
     zero_init_output: true
     num_target_vision_tokens: 4

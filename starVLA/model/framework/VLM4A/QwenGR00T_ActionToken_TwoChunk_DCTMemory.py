@@ -69,6 +69,8 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
         self.dct_memory_recent_noise_std_range = _as_noise_range(memory_cfg.get("recent_noise_std_range", None))
         self.dct_memory_count_embed_dim = int(memory_cfg.get("summary_count_embed_dim", 128))
         self.coarse_condition_query = bool(getattr(self.action_model, "coarse_condition_query", False))
+        self.coarse_action_side_tokens = bool(getattr(self.action_model, "coarse_action_side_tokens", False))
+        self.coarse_actions_for_action_head = self.coarse_condition_query or self.coarse_action_side_tokens
 
         self.dct_summary_proj = nn.Linear(self.dct_memory_action_dim, hidden_size, bias=False)
         self.dct_recent_proj = nn.Linear(self.dct_memory_action_dim, hidden_size, bias=False)
@@ -438,7 +440,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
         with torch.autocast("cuda", dtype=torch.float32):
             pred_residual_actions = self.action_model.predict_action(
                 fused_hidden,
-                coarse_actions=flat_coarse_actions if self.coarse_condition_query else None,
+                coarse_actions=flat_coarse_actions if self.coarse_actions_for_action_head else None,
             )
             action_loss = self.l1_loss(pred_residual_actions, residual_action_targets)
 
@@ -710,7 +712,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
         with torch.autocast("cuda", dtype=torch.float32):
             pred_residual_actions = self.action_model.predict_action(
                 fused_hidden,
-                coarse_actions=coarse_chunk if self.coarse_condition_query else None,
+                coarse_actions=coarse_chunk if self.coarse_actions_for_action_head else None,
             )
         pred_actions = pred_residual_actions + coarse_chunk
         self._update_online_memory(pred_actions)
@@ -815,7 +817,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
         flat_coarse_actions = flat_coarse_actions.to(device=fused_hidden.device, dtype=fused_hidden.dtype)
         pred_residual_actions = self.action_model.predict_action(
             fused_hidden,
-            coarse_actions=flat_coarse_actions if self.coarse_condition_query else None,
+            coarse_actions=flat_coarse_actions if self.coarse_actions_for_action_head else None,
         )
 
         pred_residual_actions = pred_residual_actions.view(num_refreshes, batch_size, self.fast_chunk_size, -1)

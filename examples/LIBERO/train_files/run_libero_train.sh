@@ -54,7 +54,7 @@ accelerate launch \
   --main_process_port 29500 \
   starVLA/training/train_starvla.py \
   --config_yaml ${config_yaml} \
-  --trainer.max_train_steps 100000 \
+  --trainer.max_train_steps 50000 \
   --trainer.save_interval 10000 \
   --trainer.logging_frequency 100 \
   --trainer.eval_interval 100 \

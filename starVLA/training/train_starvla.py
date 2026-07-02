@@ -13,6 +13,7 @@ Conventions:
 # Standard Library
 import argparse
 import json
+import math
 import warnings
 import os
 import time
@@ -30,6 +31,7 @@ from accelerate.utils import set_seed
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from torch.optim.lr_scheduler import LambdaLR
 from transformers import AutoProcessor, get_scheduler
 
 # Local Modules
@@ -108,6 +110,83 @@ def prepare_data(cfg, accelerator, output_dir) -> DataLoader:
     return vla_train_dataloader
 
 
+def _cosine_with_min_lr_lambda(
+    current_step: int,
+    *,
+    num_warmup_steps: int,
+    num_training_steps: int,
+    num_cycles: float,
+    min_lr_rate: float,
+) -> float:
+    if current_step < num_warmup_steps:
+        return float(current_step) / float(max(1, num_warmup_steps))
+    progress = float(current_step - num_warmup_steps) / float(max(1, num_training_steps - num_warmup_steps))
+    factor = 0.5 * (1.0 + math.cos(math.pi * float(num_cycles) * 2.0 * progress))
+    factor = factor * (1.0 - min_lr_rate) + min_lr_rate
+    return max(0.0, factor)
+
+
+def _maybe_build_action_model_offset_scheduler(optimizer, cfg, sched_kwargs):
+    action_lr_offset = int(getattr(cfg.trainer, "action_dit_loss_start_step", 0) or 0)
+    if action_lr_offset <= 0:
+        return None
+    if str(cfg.trainer.lr_scheduler_type) != "cosine_with_min_lr":
+        logger.warning(
+            "trainer.action_dit_loss_start_step is set, but action_model LR offset is only "
+            "implemented for lr_scheduler_type=cosine_with_min_lr. Falling back to the default scheduler."
+        )
+        return None
+
+    min_lr = sched_kwargs.get("min_lr", None)
+    min_lr_rate = sched_kwargs.get("min_lr_rate", None)
+    if min_lr is not None and min_lr_rate is not None:
+        raise ValueError("Only one of scheduler_specific_kwargs.min_lr or min_lr_rate should be set.")
+    if min_lr is not None:
+        min_lr_rate = float(min_lr) / float(optimizer.defaults["lr"])
+    elif min_lr_rate is None:
+        raise ValueError(
+            "cosine_with_min_lr requires scheduler_specific_kwargs.min_lr or min_lr_rate."
+        )
+    else:
+        min_lr_rate = float(min_lr_rate)
+
+    num_warmup_steps = int(cfg.trainer.num_warmup_steps)
+    num_training_steps = int(cfg.trainer.max_train_steps)
+    num_cycles = float(sched_kwargs.get("num_cycles", 0.5))
+
+    lr_lambdas = []
+    for group in optimizer.param_groups:
+        group_name = group.get("name", "")
+
+        def lr_lambda(current_step, group_name=group_name):
+            if group_name == "action_model":
+                if current_step < action_lr_offset:
+                    return 0.0
+                return _cosine_with_min_lr_lambda(
+                    current_step - action_lr_offset,
+                    num_warmup_steps=num_warmup_steps,
+                    num_training_steps=max(1, num_training_steps - action_lr_offset),
+                    num_cycles=num_cycles,
+                    min_lr_rate=min_lr_rate,
+                )
+            return _cosine_with_min_lr_lambda(
+                current_step,
+                num_warmup_steps=num_warmup_steps,
+                num_training_steps=num_training_steps,
+                num_cycles=num_cycles,
+                min_lr_rate=min_lr_rate,
+            )
+
+        lr_lambdas.append(lr_lambda)
+
+    logger.info(
+        "Using action_model LR offset scheduler: "
+        f"action_model offset={action_lr_offset}, warmup={num_warmup_steps}, "
+        f"total_steps={num_training_steps}, min_lr_rate={min_lr_rate:.6g}"
+    )
+    return LambdaLR(optimizer, lr_lambdas)
+
+
 def setup_optimizer_and_scheduler(model, cfg) -> Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler._LRScheduler]:
     """Set optimizer and scheduler."""
     param_groups = build_param_lr_groups(model=model, cfg=cfg)
@@ -126,13 +205,15 @@ def setup_optimizer_and_scheduler(model, cfg) -> Tuple[torch.optim.Optimizer, to
 
     # Strip keys unknown to transformers' get_scheduler before passing kwargs.
     sched_kwargs = {k: v for k, v in cfg.trainer.scheduler_specific_kwargs.items()}
-    lr_scheduler = get_scheduler(
-        name=cfg.trainer.lr_scheduler_type,
-        optimizer=optimizer,
-        num_warmup_steps=cfg.trainer.num_warmup_steps,
-        num_training_steps=cfg.trainer.max_train_steps,
-        scheduler_specific_kwargs=sched_kwargs,
-    )
+    lr_scheduler = _maybe_build_action_model_offset_scheduler(optimizer, cfg, sched_kwargs)
+    if lr_scheduler is None:
+        lr_scheduler = get_scheduler(
+            name=cfg.trainer.lr_scheduler_type,
+            optimizer=optimizer,
+            num_warmup_steps=cfg.trainer.num_warmup_steps,
+            num_training_steps=cfg.trainer.max_train_steps,
+            scheduler_specific_kwargs=sched_kwargs,
+        )
 
     return optimizer, lr_scheduler
 

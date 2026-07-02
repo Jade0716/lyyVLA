@@ -115,7 +115,7 @@ datasets:
     prefetch_factor: 4
 trainer:
   action_dit_loss_warmup: true
-  action_dit_loss_start_step: 10000
+  action_dit_loss_start_step: 5000
   action_dit_loss_warmup_steps: 5000
   repeated_diffusion_steps: 16
   max_train_steps: 100000

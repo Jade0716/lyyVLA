@@ -51,7 +51,7 @@ framework:
     summary_noise_std_range: [0.01, 0.03]
     recent_noise_std_range: [0.01, 0.03]
     summary_dropout: 0.3
-    summary_gate: true
+    summary_gate: false
 
   action_model:
     action_head_type: gated_attention
@@ -109,14 +109,14 @@ datasets:
       fallback_backend: torchcodec_cpu
     balance_dataset_weights: true
     balance_trajectory_weights: true
-    num_workers: 1
+    num_workers: 2
     multiprocessing_context: fork
     persistent_workers: true
     prefetch_factor: 2
     dct_memory_cache_size: 32
 trainer:
   action_dit_loss_warmup: true
-  action_dit_loss_start_step: 10000
+  action_dit_loss_start_step: 5000
   action_dit_loss_warmup_steps: 5000
   repeated_diffusion_steps: 16
   max_train_steps: 100000

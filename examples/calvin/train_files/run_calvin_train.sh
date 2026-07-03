@@ -11,9 +11,9 @@ export NCCL_TIMEOUT=10000  # timeout set to 1 hour (unit: seconds)
 export NCCL_SOCKET_TIMEOUT_MS=360000
 ###########################################################################################
 # === Please modify the following paths according to your environment ===
-config_yaml=${config_yaml:-./examples/calvin/train_files/starvla_cotrain_calvin_twochunk_state_memory.yaml}
+config_yaml=${config_yaml:-./examples/calvin/train_files/starvla_cotrain_calvin_twochunk_dct_memory.yaml}
 run_root_dir=${run_root_dir:-/16T/liuyuyan/lyyvla/results/Checkpoints}
-run_id=${run_id:-calvin_qwen3.5-0.8b-twochunk-$(date +%Y%m%d_%H%M%S)}
+run_id=${run_id:-calvin_qwen3.5-0.8b-twochunk-dctmemory-ActionSideCoarse-$(date +%Y%m%d_%H%M%S)}
 LOG_TO_FILE=${LOG_TO_FILE:-1}
 # === End of environment variable configuration ===
 ###########################################################################################
@@ -54,7 +54,6 @@ accelerate launch \
   --main_process_port 29500 \
   starVLA/training/train_starvla.py \
   --config_yaml ${config_yaml} \
-  --trainer.vla_data.video_backend torchvision_av \
   --trainer.max_train_steps 100000 \
   --trainer.save_interval 10000 \
   --trainer.logging_frequency 100 \

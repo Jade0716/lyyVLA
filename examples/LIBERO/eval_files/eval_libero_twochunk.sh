@@ -4,7 +4,7 @@ set -euo pipefail
 STARVLA_DIR="${STARVLA_DIR:-$(cd "$(dirname "$0")/../../.." && pwd)}"
 LIBERO_HOME="${LIBERO_HOME:-/home/liuyuyan/LIBERO}"
 LIBERO_PYTHON="${LIBERO_PYTHON:-python}"
-CKPT="${CKPT:-./results/Checkpoints/libero10_qwen3.5-0.8b-twochunk-dctmemory-idctcondition-20260702_141843/checkpoints/steps_40000_pytorch_model.pt}"
+CKPT="${CKPT:-./results/Checkpoints/libero10_qwen3.5-0.8b-twochunk-dctmemory-ActionSideCoarse-20260703_043601/checkpoints/steps_50000_pytorch_model.pt}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-6696}"
 TASK_SUITE_NAME="${TASK_SUITE_NAME:-libero_10}"

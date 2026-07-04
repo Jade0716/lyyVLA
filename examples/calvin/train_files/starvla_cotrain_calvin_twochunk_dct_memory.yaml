@@ -92,6 +92,7 @@ datasets:
     data_root_dir: /16T/liuyuyan/
     data_mix: calvin_abc
     action_type: delta_qpos
+    obs_image_size: [224, 224]
     twochunk_training: true
     dct_memory_training: true
     dct_memory_chunk_len: 32

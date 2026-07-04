@@ -84,6 +84,7 @@ class DINOv3BackBone(nn.Module):
             flat_views = [view for views in img_list for view in views]
             with ThreadPoolExecutor() as executor:
                 flat_tensors = list(executor.map(self._image_to_chw_float, flat_views))
+            flat_tensors = [self._resize_chw_tensor(tensor) for tensor in flat_tensors]
             num_views = len(img_list[0]) if img_list else 0
             image_tensors = torch.stack(flat_tensors).view(len(img_list), num_views, *flat_tensors[0].shape)
 
@@ -131,6 +132,17 @@ class DINOv3BackBone(nn.Module):
         if image_tensors.ndim == 4:
             return image_tensors.unsqueeze(1)
         return image_tensors
+
+    def _resize_chw_tensor(self, tensor: torch.Tensor) -> torch.Tensor:
+        height, width = tensor.shape[-2:]
+        if height == self.input_size and width == self.input_size:
+            return tensor
+        return F.interpolate(
+            tensor.unsqueeze(0),
+            size=(self.input_size, self.input_size),
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(0)
 
     @staticmethod
     def _stack_views_fast(img_list) -> torch.Tensor | None:

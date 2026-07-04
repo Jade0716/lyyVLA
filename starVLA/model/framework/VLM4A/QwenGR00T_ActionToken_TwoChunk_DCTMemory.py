@@ -351,9 +351,13 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
         if examples and "image_sequence" not in examples[0]:
             return super().forward(examples=examples, **kwargs)
 
-        image_sequences = [example["image_sequence"] for example in examples]
+        image_sequences = [self._to_pil_nested(example["image_sequence"]) for example in examples]
         instructions = [example["lang"] for example in examples]
         actions = [example["action"] for example in examples]
+
+        train_obs_image_size = getattr(self.config.datasets.vla_data, "obs_image_size", None)
+        if train_obs_image_size:
+            image_sequences = resize_images(image_sequences, target_size=train_obs_image_size)
 
         actions = torch.tensor(
             np.array(actions),

@@ -1,5 +1,5 @@
 run_id: robomemarena_qwen3.5-0.8b_twochunk_dct_memory
-run_root_dir: results/Checkpoints
+run_root_dir: /16T/liuyuyan/lyyvla/results/Checkpoints
 seed: 42
 wandb_entity: jade0716-hefei-university-of-technology
 wandb_project: starVLA_RoboMemArena
@@ -10,7 +10,7 @@ framework:
   name: QwenGR00T_ActionToken_TwoChunk_DCTMemory
 
   qwenvl:
-    base_vlm: /16T/liuyuyan/Qwen/Qwen3.5-0.8B
+    base_vlm: /15T/liuyuyan/Qwen3.5-0.8B
     attn_implementation: flash_attention_2
     language_refresh_steps: 32
     vision_refresh_steps: 8
@@ -32,7 +32,7 @@ framework:
   dino:
     dino_backbone: dinov3_vits16plus
     dino_repo_path: /home/liuyuyan/dinov3
-    dino_weights_path: /mnt/8ac36469-5f21-42a9-a6dd-21bfcb724d52/liuyuyan/DINO/dinov3_vits16plus_pretrain_lvd1689m-4057cbaa.pth
+    dino_weights_path: /home/liuyuyan/dinov3/DINO/dinov3_vits16plus_pretrain_lvd1689m-4057cbaa.pth
     dino_input_size: 256
     num_query_tokens: 4
     qformer_num_heads: 8
@@ -43,10 +43,15 @@ framework:
     chunk_len: 32
     chunk_keep_freq: 4
     summary_keep_freq: 8
+    recent_mode: none
     summary_count_embed_dim: 128
     action_dim: 7
     noise_enabled: true
     noise_std: 0.01
+    summary_noise_std_range: [0.01, 0.03]
+    recent_noise_std_range: [0.01, 0.03]
+    summary_dropout: 0.3
+    summary_gate: false
 
   action_model:
     action_head_type: gated_attention
@@ -54,6 +59,9 @@ framework:
     gated_num_heads: 8
     gated_use_rope: true
     gated_adapter_token_count: 16
+    coarse_condition_query: false
+    coarse_condition_tokens: true
+    zero_init_output: true
     num_target_vision_tokens: 4
     action_model_type: DiT-B
     hidden_size: 1024
@@ -80,20 +88,31 @@ datasets:
   vla_data:
     dataset_py: lerobot_datasets
     include_state: true
-    data_root_dir: /16T/liuyuyan
-    data_mix: robomemarena_all
+    data_root_dir: /15T/liuyuyan
+    data_mix: robomemarena_occlusion
     action_type: delta_eef
     twochunk_training: true
     dct_memory_training: true
     dct_memory_chunk_len: 32
     dct_memory_chunk_keep_freq: 4
     dct_memory_summary_keep_freq: 8
+    dct_memory_cache_mode: prefix-summary
     CoT_prompt: "The robot is a Franka single-arm manipulator operating at 20 Hz. Your task is: {instruction}. Based on the current visual observation and task instruction, summarize the low-frequency future motion trend of the next 32 control actions into 4 learnable action tokens, then use each refreshed visual observation and DCT memory bank to refine the next 8 control actions."
-    per_device_batch_size: 32
+    per_device_batch_size: 16
     load_all_data_for_training: true
-    video_backend: torchvision_av
+    video_backend: torchcodec
+    video_backend_kwargs:
+      device: cpu
+      num_ffmpeg_threads: 1
+      seek_mode: exact
+      fallback_backend: torchcodec_cpu
     balance_dataset_weights: true
     balance_trajectory_weights: true
+    num_workers: 2
+    multiprocessing_context: fork
+    persistent_workers: true
+    prefetch_factor: 2
+    dct_memory_cache_size: 32
 
 trainer:
   action_dit_loss_warmup: true

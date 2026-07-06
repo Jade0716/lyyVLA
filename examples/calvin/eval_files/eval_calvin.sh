@@ -11,7 +11,7 @@ port="${port:-5695}"
 unnorm_key="${unnorm_key:-franka}"
 your_ckpt="${your_ckpt:-/16T/liuyuyan/lyyvla/results/Checkpoints/calvin_gr00t_4actiontoken_dct_4feature-0.8B_20260618_142618/checkpoints/steps_40000_pytorch_model.pt}"
 num_sequences="${num_sequences:-1000}"
-dataset_path="${dataset_path:-/16T/liuyuyan/calvin_test}"
+dataset_path="${dataset_path:-/15T/liuyuyan/calvin_test}"
 eval_sequences_path="${eval_sequences_path:-./examples/calvin/eval_files/eval_sequences.json}"
 
 folder_name="$(echo "${your_ckpt}" | awk -F'/' '{print $(NF-2)"_"$(NF-1)"_"$NF}')"

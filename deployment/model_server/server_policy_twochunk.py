@@ -72,13 +72,13 @@ def main(args: argparse.Namespace) -> None:
     )
     metadata = {
         **wrapper.metadata,
-        "server_mode": "libero_twochunk",
+        "server_mode": "twochunk",
         "cache_reset": "client_first_request_per_episode",
     }
 
     hostname = socket.gethostname()
     logging.info(
-        "Starting LIBERO TwoChunk server on %s:%d (%s); metadata=%s",
+        "Starting TwoChunk server on %s:%d (%s); metadata=%s",
         args.host,
         args.port,
         hostname,

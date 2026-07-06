@@ -1,4 +1,4 @@
-run_id: qwenact_twochunk_DCTmemory
+run_id: qwenact_twochunk_v2
 run_root_dir: /mnt/4T_disk/16T/liuyuyan/lyyvla/results/Checkpoints
 seed: 42
 wandb_entity: jade0716-hefei-university-of-technology
@@ -7,7 +7,7 @@ is_debug: false
 version_id: "0.21"
 
 framework:
-  name: QwenGR00T_ActionToken_TwoChunk_DCTMemory
+  name: QwenGR00T_ActionToken_TwoChunk_V2
   qwenvl:
     base_vlm: /mnt/4T_disk/16T/liuyuyan/Qwen/Qwen3.5-0.8B
     attn_implementation: flash_attention_2
@@ -37,20 +37,6 @@ framework:
     qformer_num_heads: 8
     qformer_num_layers: 2
     qformer_dropout: 0.1
-
-  dct_memory:
-    chunk_len: 32
-    chunk_keep_freq: 4
-    summary_keep_freq: 8
-    recent_mode: none
-    summary_count_embed_dim: 128
-    action_dim: 7
-    noise_enabled: true
-    noise_std: 0.01
-    summary_noise_std_range: [0.01, 0.03]
-    recent_noise_std_range: [0.01, 0.03]
-    summary_dropout: 0.3
-    summary_gate: false
 
   action_model:
     action_head_type: gated_attention
@@ -92,11 +78,6 @@ datasets:
     data_mix: libero_10
     action_type: delta_qpos
     twochunk_training: true
-    dct_memory_training: true
-    dct_memory_chunk_len: 32
-    dct_memory_chunk_keep_freq: 4
-    dct_memory_summary_keep_freq: 8
-    dct_memory_cache_mode: prefix-summary
     CoT_prompt: "The robot is franka with single arm. The control frequency is 20 Hz. Your task is: {instruction}. Based on the current visual observation and task instruction, summarize the low-frequency future motion trend of the next 32 control actions into 4 learnable action tokens, then use the current observation to refine the next 4 control actions."
     per_device_batch_size: 8
     load_all_data_for_training: true
@@ -112,7 +93,6 @@ datasets:
     multiprocessing_context: fork
     persistent_workers: true
     prefetch_factor: 2
-    dct_memory_cache_size: 32
 trainer:
   action_dit_loss_warmup: true
   action_dit_loss_start_step: 10000

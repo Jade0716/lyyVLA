@@ -63,6 +63,7 @@ class Args:
     twochunk_debug: bool = False
     twochunk_debug_every_step: bool = False
     twochunk_short_chunks_per_long_window: int = 8
+    twochunk_attention_debug: bool = False
     inference_warmup_steps: int = 10
 
 
@@ -106,6 +107,27 @@ def _inference_stats_with_per_action(client_model: ModelClient) -> dict:
         "predict_action_hz": model_inference_hz,
     }
 
+
+
+
+def _log_twochunk_attention_debug(inference_stats: dict) -> None:
+    summary = inference_stats.get("twochunk_attention_debug") if inference_stats else None
+    if not summary:
+        return
+    groups = summary.get("groups", ["self", "action_token", "coarse_idct", "memory", "dino"])
+    logging.info("TwoChunk attention debug averaged over %s model calls", summary.get("count"))
+    header = "layer " + " ".join(f"{group:>13}" for group in groups) + "        sum"
+    logging.info(header)
+    for layer in summary.get("layers", []):
+        row = f"{int(layer.get('layer', -1)):>5} " + " ".join(
+            f"{100.0 * float(layer.get(group, 0.0)):12.2f}%" for group in groups
+        ) + f" {100.0 * float(layer.get('sum', 0.0)):9.2f}%"
+        logging.info(row)
+    overall = summary.get("overall", {})
+    row = "  avg " + " ".join(
+        f"{100.0 * float(overall.get(group, 0.0)):12.2f}%" for group in groups
+    ) + f" {100.0 * float(overall.get('sum', 0.0)):9.2f}%"
+    logging.info(row)
 
 def _save_eval_results(args: Args, result_data: dict) -> pathlib.Path:
     eval_log_dir = pathlib.Path(args.eval_log_dir)
@@ -156,6 +178,7 @@ def eval_libero(args: Args) -> None:
                 "twochunk_debug": args.twochunk_debug,
                 "twochunk_debug_every_step": args.twochunk_debug_every_step,
                 "twochunk_short_chunks_per_long_window": args.twochunk_short_chunks_per_long_window,
+                "twochunk_attention_debug": args.twochunk_attention_debug,
             }
             if args.twochunk
             else {}
@@ -311,6 +334,12 @@ def eval_libero(args: Args) -> None:
                     "video_path": str(video_path),
                 }
             )
+            if hasattr(client_model, "print_episode_attention_debug"):
+                client_model.print_episode_attention_debug(
+                    prefix=f"[LIBERO attention] task_id={task_id} episode={episode_idx} success={bool(done)}"
+                )
+            if hasattr(client_model, "reset_episode_attention_debug"):
+                client_model.reset_episode_attention_debug()
 
         # Log final results
         task_success_rate = float(task_successes) / float(task_episodes) if task_episodes else 0.0
@@ -350,6 +379,7 @@ def eval_libero(args: Args) -> None:
     logging.info(f"Total episodes: {total_episodes}")
     logging.info(f"Eval results saved at {result_path}")
     if inference_stats:
+        _log_twochunk_attention_debug(inference_stats)
         logging.info(
             "Average model inference time: "
             f"{inference_stats['avg_model_inference_time_s']:.4f}s/chunk, "

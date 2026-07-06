@@ -4,13 +4,14 @@ set -euo pipefail
 STARVLA_DIR="${STARVLA_DIR:-$(cd "$(dirname "$0")/../../.." && pwd)}"
 LIBERO_HOME="${LIBERO_HOME:-/home/liuyuyan/LIBERO}"
 LIBERO_PYTHON="${LIBERO_PYTHON:-python}"
-CKPT="${CKPT:-./results/Checkpoints/libero10_qwen3.5-0.8b-twochunk-dctmemory-ActionSideCoarse-20260703_043601/checkpoints/steps_50000_pytorch_model.pt}"
+CKPT="${CKPT:-./results/Checkpoints/libero10_qwen3.5-0.8b-twochunk-dctmemory-idctcondition-20260705_031812/checkpoints/steps_40000_pytorch_model.pt}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-6696}"
 TASK_SUITE_NAME="${TASK_SUITE_NAME:-libero_10}"
 NUM_TRIALS_PER_TASK="${NUM_TRIALS_PER_TASK:-50}"
 EVAL_LOG_DIR="${EVAL_LOG_DIR:-./tmp/libero/eval_logs}"
 TWOCHUNK_DEBUG="${TWOCHUNK_DEBUG:-0}"
+TWOCHUNK_ATTENTION_DEBUG="${TWOCHUNK_ATTENTION_DEBUG:-0}"
 TWOCHUNK_SHORT_CHUNKS_PER_LONG_WINDOW="${TWOCHUNK_SHORT_CHUNKS_PER_LONG_WINDOW:-8}"
 
 cd "${STARVLA_DIR}"
@@ -36,6 +37,9 @@ ARGS=(
 )
 if [[ "${TWOCHUNK_DEBUG}" == "1" ]]; then
   ARGS+=(--args.twochunk-debug)
+fi
+if [[ "${TWOCHUNK_ATTENTION_DEBUG}" == "1" ]]; then
+  ARGS+=(--args.twochunk-attention-debug)
 fi
 
 "${LIBERO_PYTHON}" ./examples/LIBERO/eval_files/eval_libero.py "${ARGS[@]}"

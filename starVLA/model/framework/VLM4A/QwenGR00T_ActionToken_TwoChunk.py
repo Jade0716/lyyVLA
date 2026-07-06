@@ -250,14 +250,35 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
             dtype=action_token_hidden.dtype,
             image_tensors=dino_image_tensors,
         ).to(device=action_token_hidden.device)
-        condition_parts = [action_token_hidden]
+        condition_parts = []
+        attention_spans = {}
+        offset = 0
+
+        condition_parts.append(action_token_hidden)
+        length = int(action_token_hidden.shape[1])
+        attention_spans["action_token"] = (offset, offset + length)
+        offset += length
+
         coarse_tokens = self._project_coarse_condition_tokens(
             coarse_actions,
             dtype=action_token_hidden.dtype,
         )
         if coarse_tokens is not None:
             condition_parts.append(coarse_tokens)
+            length = int(coarse_tokens.shape[1])
+            attention_spans["coarse_idct"] = (offset, offset + length)
+            offset += length
+        else:
+            attention_spans["coarse_idct"] = (offset, offset)
+
+        attention_spans["memory"] = (offset, offset)
+
         condition_parts.append(dino_hidden)
+        length = int(dino_hidden.shape[1])
+        attention_spans["dino"] = (offset, offset + length)
+        offset += length
+
+        self._last_attention_debug_spans = attention_spans
         condition_hidden = torch.cat(condition_parts, dim=1)
         return condition_hidden
 
@@ -387,6 +408,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
             pred_residual_actions = self.action_model.predict_action(
                 fused_hidden,
                 coarse_actions=flat_coarse_actions if self.coarse_actions_for_action_head else None,
+                attention_debug_spans=None,
             )
             action_loss = self.l1_loss(pred_residual_actions, residual_action_targets)
 
@@ -509,10 +531,12 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
             dino_image_tensors=dino_image_tensors,
             coarse_actions=coarse_chunk,
         )
+        attention_debug = bool(kwargs.get("attention_debug", False))
         with torch.autocast("cuda", dtype=torch.float32):
             pred_residual_actions = self.action_model.predict_action(
                 fused_hidden,
                 coarse_actions=coarse_chunk if self.coarse_actions_for_action_head else None,
+                attention_debug_spans=self._last_attention_debug_spans if attention_debug else None,
             )
         pred_actions = pred_residual_actions + coarse_chunk
         self._sync_cuda_if_needed()
@@ -533,7 +557,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
                 f"action_shape={tuple(pred_actions.shape)}"
             )
         normalized_actions = pred_actions.detach().float().cpu().numpy()
-        return {
+        result = {
             "normalized_actions": normalized_actions,
             "inference_timing": {
                 "slow_refresh": slow_refresh,
@@ -546,6 +570,12 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
                 "vision_refresh_steps": self.vision_refresh_steps,
             },
         }
+        if attention_debug:
+            result["attention_debug"] = {
+                "layers": getattr(self.action_model, "last_attention_debug", None),
+                "spans": getattr(self, "_last_attention_debug_spans", None),
+            }
+        return result
 
     def _valid_prediction_refreshes(self, image_sequences: List[List], examples: List[dict]) -> int:
         max_refreshes = max(1, min(self.twochunk_window_size, self.motion_dct_chunk_len) // max(self.vision_refresh_steps, 1))
@@ -614,6 +644,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         pred_residual_actions = self.action_model.predict_action(
             fused_hidden,
             coarse_actions=flat_coarse_actions if self.coarse_actions_for_action_head else None,
+            attention_debug_spans=None,
         )
 
         pred_residual_actions = pred_residual_actions.view(num_refreshes, batch_size, self.fast_chunk_size, -1)

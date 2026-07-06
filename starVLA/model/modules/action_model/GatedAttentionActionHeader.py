@@ -85,7 +85,8 @@ class GatedAttentionBlock(nn.Module):
         self,
         x: torch.Tensor,
         condition: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+        attention_debug_spans: dict[str, tuple[int, int]] | None = None,
+    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, float]]:
         batch, action_len, hidden_dim = x.shape
 
         q = self._to_heads(self.q_proj(x))
@@ -114,7 +115,29 @@ class GatedAttentionBlock(nn.Module):
         output = torch.matmul(weights, value)
         output = output.transpose(1, 2).contiguous().view(batch, action_len, hidden_dim)
         output = self.o_proj(output)
-        return self.ffn(output + x)
+        output = self.ffn(output + x)
+        if attention_debug_spans is None:
+            return output
+
+        stats = {
+            "self": float(weights[..., :action_len].sum(dim=-1).mean().detach().float().cpu().item())
+        }
+        condition_offset = action_len
+        for name, span in attention_debug_spans.items():
+            start, end = int(span[0]), int(span[1])
+            if end <= start:
+                stats[name] = 0.0
+                continue
+            stats[name] = float(
+                weights[..., condition_offset + start : condition_offset + end]
+                .sum(dim=-1)
+                .mean()
+                .detach()
+                .float()
+                .cpu()
+                .item()
+            )
+        return output, stats
 
 
 class GatedAttentionActionHead(nn.Module):
@@ -144,6 +167,7 @@ class GatedAttentionActionHead(nn.Module):
         self.adapter_token_count = adapter_token_count
         self.coarse_condition_query = bool(coarse_condition_query)
         self.coarse_action_side_tokens = bool(coarse_action_side_tokens)
+        self.last_attention_debug = None
 
         query_dim = input_dim * action_dim
         self.action_chunk_embeddings = nn.Parameter(torch.zeros(NUM_ACTIONS_CHUNK, query_dim))
@@ -177,6 +201,7 @@ class GatedAttentionActionHead(nn.Module):
         self,
         actions_hidden_states: torch.Tensor,
         coarse_actions: torch.Tensor | None = None,
+        attention_debug_spans: dict[str, tuple[int, int]] | None = None,
     ) -> torch.Tensor:
         batch_size = actions_hidden_states.shape[0]
         condition = self.condition_proj(actions_hidden_states)
@@ -211,14 +236,30 @@ class GatedAttentionActionHead(nn.Module):
         elif self.coarse_action_side_tokens:
             raise ValueError("coarse_action_side_tokens=true requires coarse_actions.")
 
+        attention_debug_layers = []
         for block in self.blocks:
-            x = block(x, condition=condition)
+            if attention_debug_spans is None:
+                x = block(x, condition=condition)
+            else:
+                x, layer_stats = block(
+                    x,
+                    condition=condition,
+                    attention_debug_spans=attention_debug_spans,
+                )
+                attention_debug_layers.append(layer_stats)
         x = x[:, : self.NUM_ACTIONS_CHUNK, :]
-        return self.output_proj(self.output_norm(x))
+        actions = self.output_proj(self.output_norm(x))
+        self.last_attention_debug = attention_debug_layers if attention_debug_spans is not None else None
+        return actions
 
     def forward(
         self,
         actions_hidden_states: torch.Tensor,
         coarse_actions: torch.Tensor | None = None,
+        attention_debug_spans: dict[str, tuple[int, int]] | None = None,
     ) -> torch.Tensor:
-        return self.predict_action(actions_hidden_states, coarse_actions=coarse_actions)
+        return self.predict_action(
+            actions_hidden_states,
+            coarse_actions=coarse_actions,
+            attention_debug_spans=attention_debug_spans,
+        )

@@ -87,8 +87,20 @@ ROBOT_TYPE_CONFIG_MAP = {
 
 DATASET_NAMED_MIXTURES = {
     # Expected path:
-    #   <datasets.vla_data.data_root_dir>/robomemarena_lerobot/meta/info.json
+    #   <datasets.vla_data.data_root_dir>/<dataset_name>/meta/info.json
     "robomemarena_all": [
         ("robomemarena_lerobot", 1.0, "robomemarena_franka"),
+    ],
+    "robomemarena_counting": [
+        ("robomemarena_lerobot/Multi-Object_Counting", 1.0, "robomemarena_franka"),
+    ],
+    "robomemarena_sequence": [
+        ("robomemarena_lerobot/Multi-Object_Sequence", 1.0, "robomemarena_franka"),
+    ],
+    "robomemarena_transferring": [
+        ("robomemarena_lerobot/Multi-Object_Transferring", 1.0, "robomemarena_franka"),
+    ],
+    "robomemarena_occlusion": [
+        ("robomemarena_lerobot/Multi-Object_Occlusion", 1.0, "robomemarena_franka"),
     ],
 }

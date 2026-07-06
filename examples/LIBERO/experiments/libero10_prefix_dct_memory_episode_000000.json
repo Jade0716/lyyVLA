@@ -1,0 +1,17 @@
+{
+  "dataset_dir": "/mnt/4dba1798-fc0d-4700-a472-04acb2f7b630/liuyuyan/libero/libero_10_no_noops_1.0.0_lerobot",
+  "episode_index": 0,
+  "video_key": "observation.images.image",
+  "video_path": "/mnt/4dba1798-fc0d-4700-a472-04acb2f7b630/liuyuyan/libero/libero_10_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000000.mp4",
+  "parquet_path": "/mnt/4dba1798-fc0d-4700-a472-04acb2f7b630/liuyuyan/libero/libero_10_no_noops_1.0.0_lerobot/data/chunk-000/episode_000000.parquet",
+  "cache_path": "/mnt/4dba1798-fc0d-4700-a472-04acb2f7b630/liuyuyan/libero/libero_10_no_noops_1.0.0_lerobot/meta/dct_bank_cache/chunk32_recent4_summary8_prefix-summary/episode_000000.npz",
+  "output": "/home/liuyuyan/lyyVLA/examples/LIBERO/experiments/libero10_prefix_dct_memory_episode_000000.mp4",
+  "frames": 214,
+  "chunk_len": 32,
+  "summary_keep_freq": 8,
+  "prefix_summary_shape": [
+    6,
+    8,
+    7
+  ]
+}

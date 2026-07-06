@@ -240,4 +240,6 @@ class PolicyServerWrapper:
         result: Dict[str, Any] = {"actions": unnorm}
         if "inference_timing" in out:
             result["inference_timing"] = out["inference_timing"]
+        if "attention_debug" in out:
+            result["attention_debug"] = out["attention_debug"]
         return result

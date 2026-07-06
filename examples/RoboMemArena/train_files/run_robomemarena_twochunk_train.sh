@@ -19,7 +19,7 @@ LOG_TO_FILE=${LOG_TO_FILE:-1}
 
 
 # export WANDB_MODE=disabled
-run_root_dir=${run_root_dir:-/16T/liuyuyan/lyyvla/results/Checkpoints}
+run_root_dir=${run_root_dir:-/15T/liuyuyan/lyyvla/results/Checkpoints}
 output_dir=${run_root_dir}/${run_id}
 mkdir -p "${output_dir}"
 
@@ -46,14 +46,13 @@ fi
 # mv this script to the output dir
 cp "$0" "${output_dir}/"
 
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-1}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,2}
 accelerate launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
-  --num_processes 1 \
+  --num_processes 2 \
   --main_process_port 29501 \
   starVLA/training/train_starvla.py \
   --config_yaml ${config_yaml} \
-  --trainer.vla_data.video_backend torchvision_av \
   --trainer.max_train_steps 150000 \
   --trainer.save_interval 10000 \
   --trainer.logging_frequency 100 \

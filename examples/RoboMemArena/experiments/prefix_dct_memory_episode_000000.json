@@ -1,0 +1,17 @@
+{
+  "dataset_dir": "/mnt/4dba1798-fc0d-4700-a472-04acb2f7b630/liuyuyan/robomemarena_lerobot/Multi-Object_Occlusion",
+  "episode_index": 0,
+  "video_key": "observation.images.image",
+  "video_path": "/mnt/4dba1798-fc0d-4700-a472-04acb2f7b630/liuyuyan/robomemarena_lerobot/Multi-Object_Occlusion/videos/chunk-000/observation.images.image/episode_000000.mp4",
+  "parquet_path": "/mnt/4dba1798-fc0d-4700-a472-04acb2f7b630/liuyuyan/robomemarena_lerobot/Multi-Object_Occlusion/data/chunk-000/episode_000000.parquet",
+  "cache_path": "/mnt/4dba1798-fc0d-4700-a472-04acb2f7b630/liuyuyan/robomemarena_lerobot/Multi-Object_Occlusion/meta/dct_bank_cache/chunk32_recent4_summary8_prefix-summary/episode_000000.npz",
+  "output": "/home/liuyuyan/lyyVLA/examples/RoboMemArena/experiments/prefix_dct_memory_episode_000000.mp4",
+  "frames": 1020,
+  "chunk_len": 32,
+  "summary_keep_freq": 8,
+  "prefix_summary_shape": [
+    31,
+    8,
+    7
+  ]
+}

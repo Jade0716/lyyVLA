@@ -14,8 +14,8 @@ export TORCHINDUCTOR_COMPILE_THREADS=${TORCHINDUCTOR_COMPILE_THREADS:-1}
 export MAX_JOBS=${MAX_JOBS:-4}
 ###########################################################################################
 # === Please modify the following paths according to your environment ===
-config_yaml=${config_yaml:-./examples/LIBERO/train_files/starvla_cotrain_libero_twochunk_dct_memory_159.yaml}
-run_id=${run_id:-libero10_qwen3.5-0.8b-twochunk-dctmemory-ActionSideCoarse-$(date +%Y%m%d_%H%M%S)}
+config_yaml=${config_yaml:-./examples/LIBERO/train_files/starvla_cotrain_libero_twochunk_v2_159.yaml}
+run_id=${run_id:-libero10_qwen3.5-0.8b-twochunk-v2-$(date +%Y%m%d_%H%M%S)}
 LOG_TO_FILE=${LOG_TO_FILE:-1}
 # === End of environment variable configuration ===
 ###########################################################################################
@@ -57,7 +57,6 @@ accelerate launch \
   starVLA/training/train_starvla.py \
   --config_yaml ${config_yaml} \
   --datasets.vla_data.video_backend torchcodec \
-  --trainer.max_train_steps 50000 \
   --trainer.save_interval 10000 \
   --trainer.logging_frequency 100 \
   --trainer.eval_interval 100 \

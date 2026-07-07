@@ -52,6 +52,10 @@ class Qwen_GR00T_ActionToken_TwoChunk_V3(Qwen_GR00T_ActionToken_TwoChunk):
             "memory": (action_len, action_len),
             "dino": (action_len, action_len + dino_len),
         }
+        self._last_action_condition_groups = {
+            "action_token": action_token_hidden,
+            "dino": dino_hidden,
+        }
         return torch.cat([action_token_hidden, dino_hidden], dim=1)
 
     @staticmethod
@@ -145,6 +149,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_V3(Qwen_GR00T_ActionToken_TwoChunk):
             pred_actions = self.action_model.predict_action(
                 fused_hidden,
                 coarse_actions=None,
+                condition_groups=getattr(self, "_last_action_condition_groups", None),
                 attention_debug_spans=None,
             )
             action_loss = self.l1_loss(pred_actions, action_targets)
@@ -245,6 +250,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_V3(Qwen_GR00T_ActionToken_TwoChunk):
             pred_mixed_actions = self.action_model.predict_action(
                 fused_hidden,
                 coarse_actions=None,
+                condition_groups=getattr(self, "_last_action_condition_groups", None),
                 attention_debug_spans=self._last_attention_debug_spans if attention_debug else None,
             )
         pred_actions = self._compose_mixed_action(pred_mixed_actions, coarse_chunk)
@@ -332,6 +338,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_V3(Qwen_GR00T_ActionToken_TwoChunk):
         pred_mixed_actions = self.action_model.predict_action(
             fused_hidden,
             coarse_actions=None,
+            condition_groups=getattr(self, "_last_action_condition_groups", None),
             attention_debug_spans=None,
         )
 

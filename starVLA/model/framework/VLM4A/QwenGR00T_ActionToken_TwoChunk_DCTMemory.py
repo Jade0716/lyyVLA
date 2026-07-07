@@ -365,6 +365,13 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
         offset += length
 
         self._last_attention_debug_spans = attention_spans
+        self._last_action_condition_groups = {
+            "action_token": action_token_hidden,
+            "memory": memory_tokens,
+            "dino": dino_hidden,
+        }
+        if coarse_tokens is not None:
+            self._last_action_condition_groups["coarse_idct"] = coarse_tokens
         return torch.cat(condition_parts, dim=1)
 
     def forward(
@@ -469,6 +476,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
             pred_residual_actions = self.action_model.predict_action(
                 fused_hidden,
                 coarse_actions=flat_coarse_actions if self.coarse_actions_for_action_head else None,
+                condition_groups=getattr(self, "_last_action_condition_groups", None),
                 attention_debug_spans=None,
             )
             action_loss = self.l1_loss(pred_residual_actions, residual_action_targets)
@@ -743,6 +751,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
             pred_residual_actions = self.action_model.predict_action(
                 fused_hidden,
                 coarse_actions=coarse_chunk if self.coarse_actions_for_action_head else None,
+                condition_groups=getattr(self, "_last_action_condition_groups", None),
                 attention_debug_spans=self._last_attention_debug_spans if attention_debug else None,
             )
         pred_actions = pred_residual_actions + coarse_chunk
@@ -855,6 +864,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
         pred_residual_actions = self.action_model.predict_action(
             fused_hidden,
             coarse_actions=flat_coarse_actions if self.coarse_actions_for_action_head else None,
+            condition_groups=getattr(self, "_last_action_condition_groups", None),
             attention_debug_spans=None,
         )
 

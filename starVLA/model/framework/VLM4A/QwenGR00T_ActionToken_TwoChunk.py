@@ -128,6 +128,11 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
                 use_rope=_as_bool(action_cfg.get("gated_use_rope", True)),
                 adapter_token_count=int(action_cfg.get("gated_adapter_token_count", self.motion_dct_keep_freq)),
                 coarse_condition_query=_as_bool(action_cfg.get("coarse_condition_query", False)),
+                separate_condition_paths=_as_bool(action_cfg.get("separate_condition_paths", False)),
+                condition_group_names=action_cfg.get(
+                    "condition_group_names",
+                    ["action_token", "coarse_idct", "memory", "dino"],
+                ),
                 zero_init_output=_as_bool(action_cfg.get("zero_init_output", False)),
             )
         if head_type not in {"pooling_mlp", "mlp", "legacy"}:
@@ -279,6 +284,12 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         offset += length
 
         self._last_attention_debug_spans = attention_spans
+        self._last_action_condition_groups = {
+            "action_token": action_token_hidden,
+            "dino": dino_hidden,
+        }
+        if coarse_tokens is not None:
+            self._last_action_condition_groups["coarse_idct"] = coarse_tokens
         condition_hidden = torch.cat(condition_parts, dim=1)
         return condition_hidden
 
@@ -408,6 +419,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
             pred_residual_actions = self.action_model.predict_action(
                 fused_hidden,
                 coarse_actions=flat_coarse_actions if self.coarse_actions_for_action_head else None,
+                condition_groups=getattr(self, "_last_action_condition_groups", None),
                 attention_debug_spans=None,
             )
             action_loss = self.l1_loss(pred_residual_actions, residual_action_targets)
@@ -536,6 +548,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
             pred_residual_actions = self.action_model.predict_action(
                 fused_hidden,
                 coarse_actions=coarse_chunk if self.coarse_actions_for_action_head else None,
+                condition_groups=getattr(self, "_last_action_condition_groups", None),
                 attention_debug_spans=self._last_attention_debug_spans if attention_debug else None,
             )
         pred_actions = pred_residual_actions + coarse_chunk
@@ -644,6 +657,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         pred_residual_actions = self.action_model.predict_action(
             fused_hidden,
             coarse_actions=flat_coarse_actions if self.coarse_actions_for_action_head else None,
+            condition_groups=getattr(self, "_last_action_condition_groups", None),
             attention_debug_spans=None,
         )
 

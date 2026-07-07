@@ -48,6 +48,11 @@ class _ActionSideCoarseMixin:
                 adapter_token_count=int(action_cfg.get("gated_adapter_token_count", self.motion_dct_keep_freq)),
                 coarse_condition_query=False,
                 coarse_action_side_tokens=_as_bool(action_cfg.get("coarse_action_side_tokens", True)),
+                separate_condition_paths=_as_bool(action_cfg.get("separate_condition_paths", False)),
+                condition_group_names=action_cfg.get(
+                    "condition_group_names",
+                    ["action_token", "coarse_idct", "memory", "dino"],
+                ),
                 zero_init_output=_as_bool(action_cfg.get("zero_init_output", False)),
             )
         if head_type not in {"pooling_mlp", "mlp", "legacy"}:

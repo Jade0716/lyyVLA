@@ -11,15 +11,15 @@ export NCCL_TIMEOUT=10000  # timeout set to 1 hour (unit: seconds)
 export NCCL_SOCKET_TIMEOUT_MS=360000
 ###########################################################################################
 # === Please modify the following paths according to your environment ===
-config_yaml=${config_yaml:-./examples/LIBERO/train_files/starvla_cotrain_libero_twochunk_v2.yaml}
-run_id=${run_id:-101_qwen3.5-0.8b-twochunk-v2-separate_condition-$(date +%Y%m%d_%H%M%S)}
+config_yaml=${config_yaml:-./examples/LIBERO/train_files/starvla_cotrain_libero_twochunk_v3_1049.yaml}
+run_id=${run_id:-1049_qwen3.5-0.8b-twochunk-v3-separate_condition-$(date +%Y%m%d_%H%M%S)}
 LOG_TO_FILE=${LOG_TO_FILE:-1}
 # === End of environment variable configuration ===
 ###########################################################################################
 
 
 # export WANDB_MODE=disabled
-run_root_dir=${run_root_dir:-/15T/liuyuyan/lyyvla/results/Checkpoints}
+run_root_dir=${run_root_dir:-/mnt/workspace/yaobeiji/liuyuyan/lyyVLA/results/Checkpoints}
 
 output_dir=${run_root_dir}/${run_id}
 mkdir -p "${output_dir}"
@@ -47,14 +47,14 @@ fi
 # mv this script to the output dir
 cp "$0" "${output_dir}/"
 
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,2}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
 accelerate launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
-  --num_processes 2 \
+  --num_processes 8 \
   --main_process_port 29500 \
   starVLA/training/train_starvla.py \
   --config_yaml ${config_yaml} \
-  --trainer.max_train_steps 50000 \
+  --trainer.max_train_steps 200000 \
   --trainer.save_interval 10000 \
   --trainer.logging_frequency 100 \
   --trainer.eval_interval 100 \

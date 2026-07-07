@@ -40,10 +40,11 @@ framework:
 
   action_model:
     action_head_type: gated_attention
-    gated_num_blocks: 8
+    gated_num_blocks: 12
     gated_num_heads: 8
     gated_use_rope: true
     gated_adapter_token_count: 16
+    separate_condition_paths: true
     coarse_condition_query: false
     coarse_condition_tokens: false
     coarse_action_side_tokens: false

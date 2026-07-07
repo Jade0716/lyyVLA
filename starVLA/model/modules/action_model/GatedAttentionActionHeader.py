@@ -41,7 +41,13 @@ class RotaryPositionEmbedding(nn.Module):
 class GatedAttentionBlock(nn.Module):
     """Residual MLP block with action-query self attention and condition attention."""
 
-    def __init__(self, dim: int, num_heads: int = 8, use_rope: bool = True):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int = 8,
+        use_rope: bool = True,
+        condition_group_names: tuple[str, ...] | None = None,
+    ):
         super().__init__()
         if dim % num_heads != 0:
             raise ValueError(f"hidden dim {dim} must be divisible by num_heads {num_heads}.")
@@ -49,6 +55,8 @@ class GatedAttentionBlock(nn.Module):
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.use_rope = use_rope
+        self.condition_group_names = tuple(condition_group_names or ())
+        self.separate_condition_paths = len(self.condition_group_names) > 0
 
         self.ffn = nn.Sequential(
             nn.LayerNorm(dim),
@@ -60,6 +68,13 @@ class GatedAttentionBlock(nn.Module):
         self.v_self = nn.Linear(dim, dim)
         self.k_condition = nn.Linear(dim, dim)
         self.v_condition = nn.Linear(dim, dim)
+        if self.separate_condition_paths:
+            self.k_condition_groups = nn.ModuleDict(
+                {name: nn.Linear(dim, dim) for name in self.condition_group_names}
+            )
+            self.v_condition_groups = nn.ModuleDict(
+                {name: nn.Linear(dim, dim) for name in self.condition_group_names}
+            )
         self.o_proj = nn.Linear(dim, dim)
         self.rope = RotaryPositionEmbedding(self.head_dim) if use_rope else None
 
@@ -85,6 +100,7 @@ class GatedAttentionBlock(nn.Module):
         self,
         x: torch.Tensor,
         condition: torch.Tensor | None = None,
+        condition_groups: dict[str, torch.Tensor] | None = None,
         attention_debug_spans: dict[str, tuple[int, int]] | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, float]]:
         batch, action_len, hidden_dim = x.shape
@@ -100,7 +116,23 @@ class GatedAttentionBlock(nn.Module):
         attn_scores = [torch.matmul(q, k_self.transpose(-2, -1))]
         values = [v_self]
 
-        if condition is not None and condition.shape[1] > 0:
+        group_lens: dict[str, int] = {}
+        if self.separate_condition_paths and condition_groups:
+            for name in self.condition_group_names:
+                group = condition_groups.get(name)
+                if group is None or group.shape[1] == 0:
+                    group_lens[name] = 0
+                    continue
+                group = group.to(device=x.device, dtype=x.dtype)
+                k_group, v_group = self._project_condition(
+                    group,
+                    self.k_condition_groups[name],
+                    self.v_condition_groups[name],
+                )
+                attn_scores.append(torch.matmul(q, k_group.transpose(-2, -1)))
+                values.append(v_group)
+                group_lens[name] = int(group.shape[1])
+        elif condition is not None and condition.shape[1] > 0:
             k_condition, v_condition = self._project_condition(
                 condition,
                 self.k_condition,
@@ -122,6 +154,28 @@ class GatedAttentionBlock(nn.Module):
         stats = {
             "self": float(weights[..., :action_len].sum(dim=-1).mean().detach().float().cpu().item())
         }
+        if self.separate_condition_paths and condition_groups:
+            offset = action_len
+            for name in self.condition_group_names:
+                length = int(group_lens.get(name, 0))
+                if length <= 0:
+                    stats[name] = 0.0
+                    continue
+                stats[name] = float(
+                    weights[..., offset : offset + length]
+                    .sum(dim=-1)
+                    .mean()
+                    .detach()
+                    .float()
+                    .cpu()
+                    .item()
+                )
+                offset += length
+            if attention_debug_spans is not None:
+                for name in attention_debug_spans:
+                    stats.setdefault(name, 0.0)
+            return output, stats
+
         condition_offset = action_len
         for name, span in attention_debug_spans.items():
             start, end = int(span[0]), int(span[1])
@@ -155,6 +209,8 @@ class GatedAttentionActionHead(nn.Module):
         adapter_token_count: int | None = None,
         coarse_condition_query: bool = False,
         coarse_action_side_tokens: bool = False,
+        separate_condition_paths: bool = False,
+        condition_group_names: tuple[str, ...] | list[str] | None = None,
         zero_init_output: bool = False,
     ):
         super().__init__()
@@ -167,6 +223,10 @@ class GatedAttentionActionHead(nn.Module):
         self.adapter_token_count = adapter_token_count
         self.coarse_condition_query = bool(coarse_condition_query)
         self.coarse_action_side_tokens = bool(coarse_action_side_tokens)
+        self.separate_condition_paths = bool(separate_condition_paths)
+        self.condition_group_names = tuple(
+            condition_group_names or ("action_token", "coarse_idct", "memory", "dino")
+        )
         self.last_attention_debug = None
 
         query_dim = input_dim * action_dim
@@ -187,6 +247,9 @@ class GatedAttentionActionHead(nn.Module):
                     dim=hidden_dim,
                     num_heads=num_heads,
                     use_rope=use_rope,
+                    condition_group_names=self.condition_group_names
+                    if self.separate_condition_paths
+                    else None,
                 )
                 for _ in range(num_blocks)
             ]
@@ -201,10 +264,17 @@ class GatedAttentionActionHead(nn.Module):
         self,
         actions_hidden_states: torch.Tensor,
         coarse_actions: torch.Tensor | None = None,
+        condition_groups: dict[str, torch.Tensor] | None = None,
         attention_debug_spans: dict[str, tuple[int, int]] | None = None,
     ) -> torch.Tensor:
         batch_size = actions_hidden_states.shape[0]
         condition = self.condition_proj(actions_hidden_states)
+        if self.separate_condition_paths and condition_groups:
+            condition_groups = {
+                name: self.condition_proj(group)
+                for name, group in condition_groups.items()
+                if group is not None
+            }
         query = self.action_chunk_embeddings.to(
             device=actions_hidden_states.device,
             dtype=actions_hidden_states.dtype,
@@ -239,11 +309,16 @@ class GatedAttentionActionHead(nn.Module):
         attention_debug_layers = []
         for block in self.blocks:
             if attention_debug_spans is None:
-                x = block(x, condition=condition)
+                x = block(
+                    x,
+                    condition=condition,
+                    condition_groups=condition_groups if self.separate_condition_paths else None,
+                )
             else:
                 x, layer_stats = block(
                     x,
                     condition=condition,
+                    condition_groups=condition_groups if self.separate_condition_paths else None,
                     attention_debug_spans=attention_debug_spans,
                 )
                 attention_debug_layers.append(layer_stats)
@@ -256,10 +331,12 @@ class GatedAttentionActionHead(nn.Module):
         self,
         actions_hidden_states: torch.Tensor,
         coarse_actions: torch.Tensor | None = None,
+        condition_groups: dict[str, torch.Tensor] | None = None,
         attention_debug_spans: dict[str, tuple[int, int]] | None = None,
     ) -> torch.Tensor:
         return self.predict_action(
             actions_hidden_states,
             coarse_actions=coarse_actions,
+            condition_groups=condition_groups,
             attention_debug_spans=attention_debug_spans,
         )

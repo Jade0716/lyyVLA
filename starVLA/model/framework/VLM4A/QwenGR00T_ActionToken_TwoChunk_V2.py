@@ -112,6 +112,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
             pred_actions = self.action_model.predict_action(
                 fused_hidden,
                 coarse_actions=flat_coarse_actions if self.coarse_actions_for_action_head else None,
+                condition_groups=getattr(self, "_last_action_condition_groups", None),
                 attention_debug_spans=None,
             )
             action_loss = self.l1_loss(pred_actions, action_targets)
@@ -213,6 +214,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
             pred_actions = self.action_model.predict_action(
                 fused_hidden,
                 coarse_actions=coarse_chunk if self.coarse_actions_for_action_head else None,
+                condition_groups=getattr(self, "_last_action_condition_groups", None),
                 attention_debug_spans=self._last_attention_debug_spans if attention_debug else None,
             )
         self._sync_cuda_if_needed()
@@ -305,6 +307,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
         pred_actions = self.action_model.predict_action(
             fused_hidden,
             coarse_actions=flat_coarse_actions if self.coarse_actions_for_action_head else None,
+            condition_groups=getattr(self, "_last_action_condition_groups", None),
             attention_debug_spans=None,
         )
 

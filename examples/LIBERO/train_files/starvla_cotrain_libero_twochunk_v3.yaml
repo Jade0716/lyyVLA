@@ -1,4 +1,4 @@
-run_id: qwenact_twochunk_v2
+run_id: qwenact_twochunk_v3
 run_root_dir: /15T/liuyuyan/lyyvla/results/Checkpoints
 seed: 42
 wandb_entity: jade0716-hefei-university-of-technology
@@ -7,7 +7,7 @@ is_debug: false
 version_id: "0.21"
 
 framework:
-  name: QwenGR00T_ActionToken_TwoChunk_V2
+  name: QwenGR00T_ActionToken_TwoChunk_V3
   qwenvl:
     base_vlm: /15T/liuyuyan/Qwen3.5-0.8B
     attn_implementation: flash_attention_2
@@ -45,7 +45,7 @@ framework:
     gated_use_rope: true
     gated_adapter_token_count: 16
     coarse_condition_query: false
-    coarse_condition_tokens: true
+    coarse_condition_tokens: false
     coarse_action_side_tokens: false
     zero_init_output: true
     num_target_vision_tokens: 4

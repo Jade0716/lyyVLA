@@ -2,7 +2,7 @@ run_id: qwenact_twochunk_v2
 run_root_dir: /mnt/4T_disk/16T/liuyuyan/lyyvla/results/Checkpoints
 seed: 42
 wandb_entity: jade0716-hefei-university-of-technology
-wandb_project: 159_Libero
+wandb_project: libero_10
 is_debug: false
 version_id: "0.21"
 

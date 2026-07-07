@@ -1,15 +1,15 @@
 run_id: starvla
 run_root_dir: playground/Checkpoints
 seed: 42
-wandb_entity: your_wandb_entity
-wandb_project: llavavla
+wandb_entity: jade0716-hefei-university-of-technology
+wandb_project: libero_10
 is_debug: false
 version_id: "0.21"
 
 framework:
   name: QwenPI_v3
   qwenvl:
-    base_vlm: /16T/liuyuyan/Qwen/Qwen3.5-2B
+    base_vlm: /15T/liuyuyan/Qwen3.5-0.8B
     attn_implementation: flash_attention_2
     vl_hidden_dim: 2048
   action_model:
@@ -56,18 +56,18 @@ datasets:
 
   vla_data:
     dataset_py: lerobot_datasets
-    data_root_dir: /16T/liuyuyan/libero/
-    data_mix: libero_all # libero_goal
+    data_root_dir: /15T/liuyuyan/libero/
+    data_mix: libero_10 # libero_goal
     action_type: delta_qpos
     sequential_step_sampling: False
     CoT_prompt: "Your task is {instruction}. To identify the key objects for your task. Locate their bounding boxes in [x1,y1,x2,y2] format."
-    per_device_batch_size: 32
+    per_device_batch_size: 16
     load_all_data_for_training: true
     video_backend: torchvision_av
 
 trainer:
   repeated_diffusion_steps: 8
-  max_train_steps: 100000
+  max_train_steps: 50000
   num_warmup_steps: 5000
   save_interval: 5000
   eval_interval: 100

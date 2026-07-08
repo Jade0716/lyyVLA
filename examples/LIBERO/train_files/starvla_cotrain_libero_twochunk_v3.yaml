@@ -9,7 +9,7 @@ version_id: "0.21"
 framework:
   name: QwenGR00T_ActionToken_TwoChunk_V3
   qwenvl:
-    base_vlm: /15T/liuyuyan/Qwen3.5-0.8B
+    base_vlm: /home/liuyuyan/Qwen3.5-0.8B
     attn_implementation: flash_attention_2
     language_refresh_steps: 32
     vision_refresh_steps: 8
@@ -98,7 +98,7 @@ trainer:
   action_dit_loss_start_step: 5000
   action_dit_loss_warmup_steps: 5000
   repeated_diffusion_steps: 16
-  max_train_steps: 100000
+  max_train_steps: 50000
   num_warmup_steps: 5000
   save_interval: 10000
   eval_interval: 100

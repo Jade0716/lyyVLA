@@ -1226,6 +1226,9 @@ class LeRobotSingleDataset(Dataset):
 
             for key in self.modality_keys.get("video", []):
                 delta_indices[key] = vision_indices
+            if self.data_cfg.get("include_state", False) not in ["False", False]:
+                for key in self.modality_keys.get("state", []):
+                    delta_indices[key] = vision_indices
             for key in self.modality_keys.get("action", []):
                 delta_indices[key] = action_indices
 

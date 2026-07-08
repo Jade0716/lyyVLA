@@ -25,6 +25,26 @@ from starVLA.training.trainer_utils.trainer_tools import resize_images
 class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
     """TwoChunk variant where action head predicts full actions, no memory."""
 
+    @staticmethod
+    def _state_for_refresh(state_tensor: torch.Tensor | None, refresh_i: int) -> torch.Tensor | None:
+        if state_tensor is None:
+            return None
+        if state_tensor.ndim == 2:
+            if refresh_i != 0:
+                raise ValueError(
+                    "TwoChunk V2 include_state requires refresh-aligned state sequence [B,T,D] "
+                    f"for multi-refresh training, got [B,D] and refresh_i={refresh_i}."
+                )
+            return state_tensor
+        if state_tensor.ndim == 3:
+            if refresh_i >= state_tensor.shape[1]:
+                raise ValueError(
+                    "TwoChunk V2 include_state requires state sequence length >= num_refreshes; "
+                    f"got state length {state_tensor.shape[1]} and refresh_i={refresh_i}."
+                )
+            return state_tensor[:, refresh_i, :]
+        raise ValueError(f"Expected state tensor shape [B,D] or [B,T,D], got {tuple(state_tensor.shape)}.")
+
     def forward(
         self,
         examples: List[dict] = None,
@@ -98,7 +118,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
             action_targets.append(actions[:, start:end, :])
             coarse_action_chunks.append(coarse_chunk)
             if state_tensor is not None:
-                state_chunks.append(state_tensor[:, refresh_i, :])
+                state_chunks.append(self._state_for_refresh(state_tensor, refresh_i))
 
         flat_action_token_hidden = action_token_hidden.repeat(num_refreshes, 1, 1)
         flat_states = torch.cat(state_chunks, dim=0) if state_chunks else None
@@ -324,7 +344,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
         for refresh_i in range(num_refreshes):
             flat_frame_images.extend([image_sequence[refresh_i] for image_sequence in image_sequences])
             if state_sequence is not None:
-                state_chunks.append(state_sequence[:, refresh_i, :])
+                state_chunks.append(self._state_for_refresh(state_sequence, refresh_i))
 
         flat_action_token_hidden = action_token_hidden.repeat(num_refreshes, 1, 1)
         flat_states = torch.cat(state_chunks, dim=0) if state_chunks else None

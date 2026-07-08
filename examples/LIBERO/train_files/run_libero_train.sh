@@ -12,7 +12,7 @@ export NCCL_SOCKET_TIMEOUT_MS=360000
 ###########################################################################################
 # === Please modify the following paths according to your environment ===
 config_yaml=${config_yaml:-./examples/LIBERO/train_files/starvla_cotrain_libero_twochunk_v2.yaml}
-run_id=${run_id:-101_qwen3.5-0.8b-twochunk-v2-separate_condition-$(date +%Y%m%d_%H%M%S)}
+run_id=${run_id:-101_qwen3.5-0.8b-twochunk-v2-separate_state-$(date +%Y%m%d_%H%M%S)}
 LOG_TO_FILE=${LOG_TO_FILE:-1}
 # === End of environment variable configuration ===
 ###########################################################################################
@@ -47,10 +47,10 @@ fi
 # mv this script to the output dir
 cp "$0" "${output_dir}/"
 
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-1,2}
 accelerate launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
-  --num_processes 3 \
+  --num_processes 2 \
   --main_process_port 29500 \
   starVLA/training/train_starvla.py \
   --config_yaml ${config_yaml} \

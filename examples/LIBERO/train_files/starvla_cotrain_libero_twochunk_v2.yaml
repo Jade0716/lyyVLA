@@ -9,7 +9,7 @@ version_id: "0.21"
 framework:
   name: QwenGR00T_ActionToken_TwoChunk_V2
   qwenvl:
-    base_vlm: /15T/liuyuyan/Qwen3.5-0.8B
+    base_vlm: /home/liuyuyan/Qwen3.5-0.8B
     attn_implementation: flash_attention_2
     language_refresh_steps: 32
     vision_refresh_steps: 8
@@ -80,6 +80,8 @@ datasets:
     data_mix: libero_10
     action_type: delta_qpos
     twochunk_training: true
+    twochunk_vision_stride: 8
+    twochunk_window_size: 32
     CoT_prompt: "The robot is franka with single arm. The control frequency is 20 Hz. Your task is: {instruction}. Based on the current visual observation and task instruction, summarize the low-frequency future motion trend of the next 32 control actions into 4 learnable action tokens, then use the current observation to refine the next 4 control actions."
     per_device_batch_size: 16
     load_all_data_for_training: true

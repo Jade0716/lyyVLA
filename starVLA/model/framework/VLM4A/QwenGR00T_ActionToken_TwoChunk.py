@@ -36,6 +36,9 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         dino_cfg = self.config.framework.get("dino", {})
         hidden_size = int(self.qwen_vl_interface.model.config.hidden_size)
         action_dim = int(self.config.framework.action_model.action_dim)
+        vla_data_cfg = self.config.get("datasets", {}).get("vla_data", {})
+        self.include_state_condition = _as_bool(vla_data_cfg.get("include_state", False))
+        self.state_dim = int(self.config.framework.action_model.get("state_dim", 0))
 
         self.language_refresh_steps = int(qwenvl_cfg.get("language_refresh_steps", 64))
         self.vision_refresh_steps = int(qwenvl_cfg.get("vision_refresh_steps", self.action_horizon))
@@ -86,6 +89,13 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
             in_features=self.dino_encoder.num_channels,
             out_features=hidden_size,
         )
+        self.state_condition_proj = None
+        self.state_condition_type_embedding = None
+        if self.include_state_condition:
+            if self.state_dim <= 0:
+                raise ValueError("include_state=true requires framework.action_model.state_dim > 0.")
+            self.state_condition_proj = nn.Linear(self.state_dim, hidden_size, bias=False)
+            self.state_condition_type_embedding = nn.Parameter(torch.randn(1, 1, hidden_size) * 0.02)
         self.action_model = self._build_fast_action_head(
             hidden_size=hidden_size,
             action_dim=action_dim,
@@ -118,6 +128,9 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         hidden_dim = int(action_cfg.get("hidden_size", hidden_size))
 
         if head_type in {"gated_attention", "vla_adapter", "adapter"}:
+            default_condition_group_names = ["action_token", "coarse_idct", "memory", "dino"]
+            if getattr(self, "include_state_condition", False):
+                default_condition_group_names.append("state")
             return GatedAttentionActionHead(
                 input_dim=hidden_size,
                 hidden_dim=hidden_dim,
@@ -131,7 +144,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
                 separate_condition_paths=_as_bool(action_cfg.get("separate_condition_paths", False)),
                 condition_group_names=action_cfg.get(
                     "condition_group_names",
-                    ["action_token", "coarse_idct", "memory", "dino"],
+                    default_condition_group_names,
                 ),
                 zero_init_output=_as_bool(action_cfg.get("zero_init_output", False)),
             )
@@ -249,6 +262,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         frame_images: List,
         dino_image_tensors: torch.Tensor | None = None,
         coarse_actions: torch.Tensor | None = None,
+        state: torch.Tensor | np.ndarray | None = None,
     ) -> torch.Tensor:
         dino_hidden = self._encode_dino_hidden_states(
             batch_images=frame_images,
@@ -283,6 +297,20 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         attention_spans["dino"] = (offset, offset + length)
         offset += length
 
+        state_tokens = self._project_state_condition_tokens(
+            state,
+            batch_size=action_token_hidden.shape[0],
+            device=action_token_hidden.device,
+            dtype=action_token_hidden.dtype,
+        )
+        if state_tokens is not None:
+            condition_parts.append(state_tokens)
+            length = int(state_tokens.shape[1])
+            attention_spans["state"] = (offset, offset + length)
+            offset += length
+        else:
+            attention_spans["state"] = (offset, offset)
+
         self._last_attention_debug_spans = attention_spans
         self._last_action_condition_groups = {
             "action_token": action_token_hidden,
@@ -290,8 +318,51 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         }
         if coarse_tokens is not None:
             self._last_action_condition_groups["coarse_idct"] = coarse_tokens
+        if state_tokens is not None:
+            self._last_action_condition_groups["state"] = state_tokens
         condition_hidden = torch.cat(condition_parts, dim=1)
         return condition_hidden
+
+    def _project_state_condition_tokens(
+        self,
+        state: torch.Tensor | np.ndarray | None,
+        batch_size: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor | None:
+        if not self.include_state_condition:
+            return None
+        if state is None:
+            raise ValueError("include_state=true requires examples to contain `state`.")
+        if self.state_condition_proj is None or self.state_condition_type_embedding is None:
+            raise RuntimeError("State condition projection is not initialized.")
+        state_tensor = torch.as_tensor(state, device=device)
+        if state_tensor.ndim == 1:
+            state_tensor = state_tensor.view(1, 1, -1)
+        elif state_tensor.ndim == 2:
+            if state_tensor.shape[0] == batch_size:
+                state_tensor = state_tensor[:, None, :]
+            elif state_tensor.shape[0] == 1 and batch_size > 1:
+                state_tensor = state_tensor.expand(batch_size, -1)[:, None, :]
+            else:
+                state_tensor = state_tensor.reshape(batch_size, 1, -1)
+        elif state_tensor.ndim == 3:
+            if state_tensor.shape[1] != 1:
+                state_tensor = state_tensor[:, :1, :]
+        else:
+            raise ValueError(f"Expected state shape [D], [B,D], or [B,1,D], got {tuple(state_tensor.shape)}.")
+        if state_tensor.shape[0] != batch_size:
+            raise ValueError(f"State batch size {state_tensor.shape[0]} does not match condition batch size {batch_size}.")
+        if state_tensor.shape[-1] != self.state_dim:
+            raise ValueError(f"State dim {state_tensor.shape[-1]} does not match framework.action_model.state_dim={self.state_dim}.")
+        tokens = self.state_condition_proj(
+            state_tensor.to(
+                device=self.state_condition_proj.weight.device,
+                dtype=self.state_condition_proj.weight.dtype,
+            )
+        ).to(device=device, dtype=dtype)
+        type_embedding = self.state_condition_type_embedding.to(device=tokens.device, dtype=tokens.dtype)
+        return tokens + type_embedding
 
     def _project_coarse_condition_tokens(
         self,

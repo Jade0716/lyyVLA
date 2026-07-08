@@ -47,7 +47,7 @@ class TwoChunkModelClient(ModelClient):
         self._attention_debug_count = 0
         self._episode_attention_debug_sum: list[dict[str, float]] | None = None
         self._episode_attention_debug_count = 0
-        self._attention_debug_groups = ["self", "action_token", "coarse_idct", "memory", "dino"]
+        self._attention_debug_groups = ["self", "action_token", "coarse_idct", "memory", "dino", "state"]
         self.dct_memory_enabled = bool(meta.get("dct_memory", False)) or "DCTMemory" in framework_name
         self.dct_memory_chunk_len = int(meta.get("dct_memory_chunk_len", self.language_refresh_steps))
         self.dct_memory_recent_mode = str(meta.get("dct_memory_recent_mode", "")).lower()
@@ -107,7 +107,7 @@ class TwoChunkModelClient(ModelClient):
             return None
         layers = []
         for layer_idx, layer_sums in enumerate(sums):
-            layer = {group: layer_sums[group] / float(count) for group in self._attention_debug_groups}
+            layer = {group: layer_sums.get(group, 0.0) / float(count) for group in self._attention_debug_groups}
             layer["layer"] = layer_idx
             layer["sum"] = sum(layer[group] for group in self._attention_debug_groups)
             layers.append(layer)
@@ -127,7 +127,7 @@ class TwoChunkModelClient(ModelClient):
     def _format_attention_debug_summary(summary: dict | None, title: str) -> str | None:
         if not summary:
             return None
-        groups = summary.get("groups", ["self", "action_token", "coarse_idct", "memory", "dino"])
+        groups = summary.get("groups", ["self", "action_token", "coarse_idct", "memory", "dino", "state"])
         lines = [f"{title} averaged over {summary.get('count')} model calls"]
         lines.append("layer " + " ".join(f"{group:>13}" for group in groups) + "        sum")
         for layer in summary.get("layers", []):

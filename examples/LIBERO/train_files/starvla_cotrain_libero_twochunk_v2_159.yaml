@@ -45,6 +45,7 @@ framework:
     gated_use_rope: true
     gated_adapter_token_count: 16
     separate_condition_paths: true
+    condition_group_names: [action_token, coarse_idct, memory, dino, state]
     coarse_condition_query: false
     coarse_condition_tokens: true
     coarse_action_side_tokens: false
@@ -74,7 +75,7 @@ framework:
 datasets:
   vla_data:
     dataset_py: lerobot_datasets
-    include_state: false
+    include_state: true
     data_root_dir: /mnt/4T_disk/16T/liuyuyan/libero/
     data_mix: libero_10
     action_type: delta_qpos

@@ -36,6 +36,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
         image_sequences = [self._to_pil_nested(example["image_sequence"]) for example in examples]
         instructions = [example["lang"] for example in examples]
         actions = [example["action"] for example in examples]
+        states = [example.get("state") for example in examples] if self.include_state_condition else None
 
         train_obs_image_size = getattr(self.config.datasets.vla_data, "obs_image_size", None)
         if train_obs_image_size:
@@ -46,6 +47,15 @@ class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
             device=self.action_query_token.device,
             dtype=self.action_query_token.dtype,
         )
+        state_tensor = None
+        if self.include_state_condition:
+            if states is None or any(state is None for state in states):
+                raise ValueError("include_state=true requires every training example to contain `state`.")
+            state_tensor = torch.tensor(
+                np.array(states),
+                device=self.action_query_token.device,
+                dtype=self.action_query_token.dtype,
+            )
         num_refreshes = self._valid_training_refreshes(image_sequences, actions)
         if num_refreshes == 0:
             raise ValueError(
@@ -79,6 +89,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
         flat_frame_images = []
         action_targets = []
         coarse_action_chunks = []
+        state_chunks = []
         for refresh_i in range(num_refreshes):
             start = refresh_i * self.vision_refresh_steps
             end = start + self.fast_chunk_size
@@ -86,8 +97,11 @@ class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
             flat_frame_images.extend([image_sequence[refresh_i] for image_sequence in image_sequences])
             action_targets.append(actions[:, start:end, :])
             coarse_action_chunks.append(coarse_chunk)
+            if state_tensor is not None:
+                state_chunks.append(state_tensor[:, refresh_i, :])
 
         flat_action_token_hidden = action_token_hidden.repeat(num_refreshes, 1, 1)
+        flat_states = torch.cat(state_chunks, dim=0) if state_chunks else None
         flat_coarse_actions = torch.cat(coarse_action_chunks, dim=0).to(
             device=flat_action_token_hidden.device,
             dtype=flat_action_token_hidden.dtype,
@@ -98,6 +112,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
             flat_frame_images,
             dino_image_tensors=dino_image_tensors,
             coarse_actions=flat_coarse_actions,
+            state=flat_states,
         )
         action_targets = torch.cat(action_targets, dim=0).to(
             device=fused_hidden.device,
@@ -161,6 +176,18 @@ class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
             batch_images = resize_images(batch_images, target_size=train_obs_image_size)
 
         batch_size = len(examples)
+        state = None
+        if self.include_state_condition:
+            states = [example.get("state") for example in examples]
+            if any(item is None for item in states):
+                raise ValueError("include_state=true requires every inference example to contain `state`.")
+            state = torch.tensor(
+                np.array(states),
+                device=self.action_query_token.device,
+                dtype=self.action_query_token.dtype,
+            )
+            if state.ndim == 3 and state.shape[1] == 1:
+                state = state[:, 0, :]
         debug_twochunk = bool(kwargs.get("debug_twochunk", False))
         reset_cache = bool(kwargs.get("reset_cache", False))
         if reset_cache:
@@ -208,6 +235,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
             batch_images,
             dino_image_tensors=dino_image_tensors,
             coarse_actions=coarse_chunk,
+            state=state,
         )
         attention_debug = bool(kwargs.get("attention_debug", False))
         with torch.autocast("cuda", dtype=torch.float32):
@@ -261,6 +289,16 @@ class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
     ):
         image_sequences = [self._to_pil_nested(example["image_sequence"]) for example in examples]
         instructions = [example["lang"] for example in examples]
+        state_sequence = None
+        if self.include_state_condition:
+            states = [example.get("state") for example in examples]
+            if any(item is None for item in states):
+                raise ValueError("include_state=true requires every prediction-window example to contain `state`.")
+            state_sequence = torch.tensor(
+                np.array(states),
+                device=self.action_query_token.device,
+                dtype=self.action_query_token.dtype,
+            )
 
         train_obs_image_size = getattr(self.config.datasets.vla_data, "obs_image_size", None)
         if train_obs_image_size:
@@ -282,10 +320,14 @@ class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
         )
 
         flat_frame_images = []
+        state_chunks = []
         for refresh_i in range(num_refreshes):
             flat_frame_images.extend([image_sequence[refresh_i] for image_sequence in image_sequences])
+            if state_sequence is not None:
+                state_chunks.append(state_sequence[:, refresh_i, :])
 
         flat_action_token_hidden = action_token_hidden.repeat(num_refreshes, 1, 1)
+        flat_states = torch.cat(state_chunks, dim=0) if state_chunks else None
         batch_size = len(examples)
         coarse_chunks = []
         for refresh_i in range(num_refreshes):
@@ -302,6 +344,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
             flat_action_token_hidden,
             flat_frame_images,
             coarse_actions=flat_coarse_actions,
+            state=flat_states,
         )
         flat_coarse_actions = flat_coarse_actions.to(device=fused_hidden.device, dtype=fused_hidden.dtype)
         pred_actions = self.action_model.predict_action(

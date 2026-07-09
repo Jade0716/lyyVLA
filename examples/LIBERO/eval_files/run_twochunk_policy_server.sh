@@ -4,7 +4,7 @@ set -euo pipefail
 STARVLA_DIR="${STARVLA_DIR:-$(cd "$(dirname "$0")/../../.." && pwd)}"
 STARVLA_PYTHON="${STARVLA_PYTHON:-python}"
 CKPT="${CKPT:-./results/Checkpoints/159_qwen3.5-0.8b-twochunk-v2-20260707_183630/checkpoints/steps_50000_pytorch_model.pt}"
-GPU_ID="${GPU_ID:-2}"
+GPU_ID="${GPU_ID:-0}"
 PORT="${PORT:-6696}"
 USE_BF16="${USE_BF16:-1}"
 
@@ -20,4 +20,4 @@ if [[ "${USE_BF16}" == "1" ]]; then
   CMD+=(--use_bf16)
 fi
 
-CUDA_VISIBLE_DEVICES="${GPU_ID}" "${CMD[@]}"
+exec env CUDA_VISIBLE_DEVICES="${GPU_ID}" "${CMD[@]}"

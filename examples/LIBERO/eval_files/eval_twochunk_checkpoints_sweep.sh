@@ -2,23 +2,26 @@
 set -euo pipefail
 
 STARVLA_DIR="${STARVLA_DIR:-$(cd "$(dirname "$0")/../../.." && pwd)}"
-EXP_DIR="${EXP_DIR:-${STARVLA_DIR}/results/Checkpoints/159_qwen3.5-0.8b-twochunk-v2-20260707_183630}"
+EXP_DIR="${EXP_DIR:-./results/Checkpoints/159_qwen3.5-0.8b-twochunk-v2-separate-state-20260708_190126}"
 CHECKPOINT_DIR="${CHECKPOINT_DIR:-${EXP_DIR}/checkpoints}"
 CKPT_PATTERN="${CKPT_PATTERN:-steps_*_pytorch_model.pt}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-6696}"
-GPU_ID="${GPU_ID:-2}"
+GPU_ID="${GPU_ID:-0}"
 USE_BF16="${USE_BF16:-1}"
 SWEEP_LOG_DIR="${SWEEP_LOG_DIR:-${EXP_DIR}/eval_sweep_logs}"
 CONTINUE_ON_ERROR="${CONTINUE_ON_ERROR:-1}"
+CONTINUE_ON_SERVER_ERROR="${CONTINUE_ON_SERVER_ERROR:-0}"
 SERVER_START_TIMEOUT_S="${SERVER_START_TIMEOUT_S:-300}"
 SERVER_POLL_INTERVAL_S="${SERVER_POLL_INTERVAL_S:-2}"
+SERVER_STOP_TIMEOUT_S="${SERVER_STOP_TIMEOUT_S:-30}"
+PORT_CLOSE_TIMEOUT_S="${PORT_CLOSE_TIMEOUT_S:-60}"
 ALLOW_PORT_IN_USE="${ALLOW_PORT_IN_USE:-0}"
 
 SERVER_SCRIPT="${SERVER_SCRIPT:-${STARVLA_DIR}/examples/LIBERO/eval_files/run_twochunk_policy_server.sh}"
 EVAL_SCRIPT="${EVAL_SCRIPT:-${STARVLA_DIR}/examples/LIBERO/eval_files/eval_libero_twochunk.sh}"
 STARVLA_PYTHON="${STARVLA_PYTHON:-/home/liuyuyan/miniconda3/envs/starVLA/bin/python}"
-LIBERO_PYTHON="${LIBERO_PYTHON:-${STARVLA_PYTHON}}"
+LIBERO_PYTHON="${LIBERO_PYTHON:-/home/liuyuyan/miniconda3/envs/libero/bin/python}"
 
 mkdir -p "${SWEEP_LOG_DIR}"
 cd "${STARVLA_DIR}"
@@ -35,10 +38,28 @@ if [[ ${#CKPTS[@]} -eq 0 ]]; then
 fi
 
 SERVER_PID=""
+server_alive() {
+  [[ -n "${SERVER_PID}" ]] && kill -0 "${SERVER_PID}" 2>/dev/null
+}
+
 cleanup_server() {
-  if [[ -n "${SERVER_PID}" ]] && kill -0 "${SERVER_PID}" 2>/dev/null; then
+  if server_alive; then
     echo "[sweep] stopping server pid=${SERVER_PID}"
-    kill "${SERVER_PID}" 2>/dev/null || true
+    kill -TERM "${SERVER_PID}" 2>/dev/null || true
+
+    local deadline=$((SECONDS + SERVER_STOP_TIMEOUT_S))
+    while (( SECONDS < deadline )); do
+      if ! server_alive; then
+        break
+      fi
+      sleep 1
+    done
+
+    if server_alive; then
+      echo "[sweep] server did not stop within ${SERVER_STOP_TIMEOUT_S}s; sending SIGKILL"
+      kill -KILL "${SERVER_PID}" 2>/dev/null || true
+    fi
+
     wait "${SERVER_PID}" 2>/dev/null || true
   fi
   SERVER_PID=""
@@ -59,10 +80,21 @@ finally:
 PY2
 }
 
+wait_for_port_closed() {
+  local deadline=$((SECONDS + PORT_CLOSE_TIMEOUT_S))
+  while (( SECONDS < deadline )); do
+    if ! port_open; then
+      return 0
+    fi
+    sleep "${SERVER_POLL_INTERVAL_S}"
+  done
+  return 1
+}
+
 wait_for_server() {
   local deadline=$((SECONDS + SERVER_START_TIMEOUT_S))
   while (( SECONDS < deadline )); do
-    if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
+    if ! server_alive; then
       echo "[sweep] server exited before becoming ready" >&2
       return 1
     fi
@@ -89,6 +121,10 @@ for idx in "${!CKPTS[@]}"; do
 
   echo "[sweep] [$((idx + 1))/${TOTAL}] ckpt=${CKPT}"
   cleanup_server
+  if [[ "${ALLOW_PORT_IN_USE}" != "1" ]] && ! wait_for_port_closed; then
+    echo "[sweep] ${HOST}:${PORT} is still open after cleanup. Stop the old server before continuing." >&2
+    exit 1
+  fi
 
   if port_open && [[ "${ALLOW_PORT_IN_USE}" != "1" ]]; then
     echo "[sweep] ${HOST}:${PORT} is already open before starting server. Stop the old server or set ALLOW_PORT_IN_USE=1." >&2
@@ -109,7 +145,7 @@ for idx in "${!CKPTS[@]}"; do
     echo "[sweep] server failed for ${CKPT}; see ${SERVER_LOG}" >&2
     cleanup_server
     FAILURES=$((FAILURES + 1))
-    if [[ "${CONTINUE_ON_ERROR}" != "1" ]]; then
+    if [[ "${CONTINUE_ON_SERVER_ERROR}" != "1" ]]; then
       exit 1
     fi
     continue

@@ -472,7 +472,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
             dtype=fused_hidden.dtype,
         )
 
-        with torch.autocast("cuda", dtype=torch.float32):
+        with torch.autocast("cuda", dtype=torch.bfloat16):
             pred_residual_actions = self.action_model.predict_action(
                 fused_hidden,
                 coarse_actions=flat_coarse_actions if self.coarse_actions_for_action_head else None,
@@ -747,7 +747,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
             coarse_actions=coarse_chunk,
         )
         attention_debug = bool(kwargs.get("attention_debug", False))
-        with torch.autocast("cuda", dtype=torch.float32):
+        with torch.autocast("cuda", dtype=torch.bfloat16):
             pred_residual_actions = self.action_model.predict_action(
                 fused_hidden,
                 coarse_actions=coarse_chunk if self.coarse_actions_for_action_head else None,

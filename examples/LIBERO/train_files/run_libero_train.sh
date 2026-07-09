@@ -11,8 +11,8 @@ export NCCL_TIMEOUT=10000  # timeout set to 1 hour (unit: seconds)
 export NCCL_SOCKET_TIMEOUT_MS=360000
 ###########################################################################################
 # === Please modify the following paths according to your environment ===
-config_yaml=${config_yaml:-./examples/LIBERO/train_files/starvla_cotrain_libero_twochunk_v2.yaml}
-run_id=${run_id:-101_qwen3.5-0.8b-twochunk-v2-separate_state-$(date +%Y%m%d_%H%M%S)}
+config_yaml=${config_yaml:-./examples/LIBERO/train_files/starvla_cotrain_libero_twochunk_v3.yaml}
+run_id=${run_id:-101_qwen3.5-0.8b-twochunk-v3-separate_nostate-$(date +%Y%m%d_%H%M%S)}
 LOG_TO_FILE=${LOG_TO_FILE:-1}
 # === End of environment variable configuration ===
 ###########################################################################################

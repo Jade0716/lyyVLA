@@ -486,7 +486,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
             dtype=fused_hidden.dtype,
         )
 
-        with torch.autocast("cuda", dtype=torch.float32):
+        with torch.autocast("cuda", dtype=torch.bfloat16):
             pred_residual_actions = self.action_model.predict_action(
                 fused_hidden,
                 coarse_actions=flat_coarse_actions if self.coarse_actions_for_action_head else None,
@@ -562,6 +562,18 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
             batch_images = resize_images(batch_images, target_size=train_obs_image_size)
 
         batch_size = len(examples)
+        state = None
+        if self.include_state_condition:
+            states = [example.get("state") for example in examples]
+            if any(item is None for item in states):
+                raise ValueError("include_state=true requires every inference example to contain `state`.")
+            state = torch.tensor(
+                np.array(states),
+                device=self.action_query_token.device,
+                dtype=self.action_query_token.dtype,
+            )
+            if state.ndim == 3 and state.shape[1] == 1:
+                state = state[:, 0, :]
         debug_twochunk = bool(kwargs.get("debug_twochunk", False))
         reset_cache = bool(kwargs.get("reset_cache", False))
         if reset_cache:
@@ -613,9 +625,10 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
             batch_images,
             dino_image_tensors=dino_image_tensors,
             coarse_actions=coarse_chunk,
+            state=state,
         )
         attention_debug = bool(kwargs.get("attention_debug", False))
-        with torch.autocast("cuda", dtype=torch.float32):
+        with torch.autocast("cuda", dtype=torch.bfloat16):
             pred_residual_actions = self.action_model.predict_action(
                 fused_hidden,
                 coarse_actions=coarse_chunk if self.coarse_actions_for_action_head else None,

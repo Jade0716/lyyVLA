@@ -145,7 +145,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_V3(Qwen_GR00T_ActionToken_TwoChunk):
             dtype=fused_hidden.dtype,
         )
 
-        with torch.autocast("cuda", dtype=torch.float32):
+        with torch.autocast("cuda", dtype=torch.bfloat16):
             pred_actions = self.action_model.predict_action(
                 fused_hidden,
                 coarse_actions=None,
@@ -246,7 +246,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_V3(Qwen_GR00T_ActionToken_TwoChunk):
             dino_image_tensors=dino_image_tensors,
         )
         attention_debug = bool(kwargs.get("attention_debug", False))
-        with torch.autocast("cuda", dtype=torch.float32):
+        with torch.autocast("cuda", dtype=torch.bfloat16):
             pred_mixed_actions = self.action_model.predict_action(
                 fused_hidden,
                 coarse_actions=None,

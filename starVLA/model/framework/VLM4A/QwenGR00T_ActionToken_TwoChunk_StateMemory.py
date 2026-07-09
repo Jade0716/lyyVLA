@@ -252,7 +252,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_StateMemory(Qwen_GR00T_ActionToken_TwoChun
             dtype=fused_hidden.dtype,
         )
 
-        with torch.autocast("cuda", dtype=torch.float32):
+        with torch.autocast("cuda", dtype=torch.bfloat16):
             pred_residual_actions = self.action_model.predict_action(fused_hidden)
             action_loss = self.l1_loss(pred_residual_actions, residual_action_targets)
 
@@ -388,7 +388,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_StateMemory(Qwen_GR00T_ActionToken_TwoChun
             dino_image_tensors=dino_image_tensors,
             state_memory_tokens=state_memory_tokens,
         )
-        with torch.autocast("cuda", dtype=torch.float32):
+        with torch.autocast("cuda", dtype=torch.bfloat16):
             pred_residual_actions = self.action_model.predict_action(fused_hidden)
         coarse_action = self._coarse_with_gripper_pad(
             self._cached_coarse_action,

@@ -28,7 +28,7 @@ if [[ ! -d "${CHECKPOINT_DIR}" ]]; then
   exit 1
 fi
 
-mapfile -t CKPTS < <(find "${CHECKPOINT_DIR}" -maxdepth 1 -type f -name "${CKPT_PATTERN}" | sort -V)
+mapfile -t CKPTS < <(find "${CHECKPOINT_DIR}" -maxdepth 1 -type f -name "${CKPT_PATTERN}" | sort -Vr)
 if [[ ${#CKPTS[@]} -eq 0 ]]; then
   echo "[sweep] no checkpoints found: ${CHECKPOINT_DIR}/${CKPT_PATTERN}" >&2
   exit 1

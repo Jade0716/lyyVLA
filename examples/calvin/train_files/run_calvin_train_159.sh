@@ -7,6 +7,7 @@ set -e
 # # used for check save when communication
 # export NCCL_BLOCKING_WAIT=1
 # export NCCL_ASYNC_ERROR_HANDLING=1
+export NCCL_IB_DISABLE=1
 export NCCL_TIMEOUT=10000  # timeout set to 1 hour (unit: seconds)
 export NCCL_SOCKET_TIMEOUT_MS=360000
 export TORCHINDUCTOR_COMPILE_THREADS=${TORCHINDUCTOR_COMPILE_THREADS:-1}
@@ -15,7 +16,7 @@ export MAX_JOBS=${MAX_JOBS:-4}
 # === Please modify the following paths according to your environment ===
 config_yaml=${config_yaml:-./examples/calvin/train_files/starvla_cotrain_calvin_twochunk_v2.yaml}
 run_root_dir=${run_root_dir:-./results/Checkpoints}
-run_id=${run_id:-101-calvin-twochunk-v2-state-$(date +%Y%m%d_%H%M%S)}
+run_id=${run_id:-159-calvin-twochunk-v2-state-$(date +%Y%m%d_%H%M%S)}
 LOG_TO_FILE=${LOG_TO_FILE:-1}
 # === End of environment variable configuration ===
 ###########################################################################################
@@ -49,10 +50,10 @@ fi
 # mv this script to the output dir
 cp "$0" "${output_dir}/"
 
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-1,2}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
 accelerate launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
-  --num_processes 2 \
+  --num_processes 4 \
   --main_process_port 29500 \
   starVLA/training/train_starvla.py \
   --config_yaml ${config_yaml} \

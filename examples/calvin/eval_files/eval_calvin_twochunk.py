@@ -61,6 +61,7 @@ class CalvinTwoChunkModelClient:
                 f"{self.action_chunk_size} and {self.vision_refresh_steps}."
             )
 
+        self.include_state = bool(meta.get("include_state", False))
         self.dct_memory_enabled = bool(meta.get("dct_memory", False)) or "DCTMemory" in framework_name
         self.dct_memory_chunk_len = int(meta.get("dct_memory_chunk_len", self.language_refresh_steps))
         self.dct_memory_recent_mode = str(meta.get("dct_memory_recent_mode", "")).lower()
@@ -109,6 +110,7 @@ class CalvinTwoChunkModelClient:
             f"*** CALVIN TwoChunk client: unnorm_key={unnorm_key}, "
             f"vision_refresh_steps={self.vision_refresh_steps}, "
             f"language_refresh_steps={self.language_refresh_steps}, "
+            f"include_state={self.include_state}, "
             f"dct_memory={self.dct_memory_enabled}, "
             f"memory_strategy={self.online_memory_strategy or 'n/a'}, "
             f"server_meta={meta} ***"
@@ -148,6 +150,7 @@ class CalvinTwoChunkModelClient:
             "action_chunk_size": self.action_chunk_size,
             "vision_refresh_steps": self.vision_refresh_steps,
             "language_refresh_steps": self.language_refresh_steps,
+            "include_state": self.include_state,
             "vlm_cache_strategy": self.server_metadata.get("vlm_cache_strategy"),
             "dct_memory": self.dct_memory_enabled,
             "dct_memory_chunk_len": self.dct_memory_chunk_len if self.dct_memory_enabled else None,
@@ -283,6 +286,11 @@ class CalvinTwoChunkPolicyClient:
             "image": [image, wrist_image],
             "lang": lang_annotation,
         }
+        if self.client.include_state:
+            robot_obs = np.asarray(obs["robot_obs"], dtype=np.float32).reshape(-1)
+            # Send raw 15-D CALVIN robot_obs. The server extracts the 8-D
+            # training state order and applies checkpoint normalization.
+            example["state"] = robot_obs[None, :]
         model_output = self.client.step(example=example, step=self.step_count)
         raw_action = model_output["raw_action"]
         action = np.concatenate(

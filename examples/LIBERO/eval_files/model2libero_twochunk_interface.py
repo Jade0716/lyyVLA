@@ -284,7 +284,6 @@ class TwoChunkModelClient(ModelClient):
         long_refreshes_per_32_steps = (
             32.0 / float(long_window_steps) if long_window_steps > 0 else 0.0
         )
-        avg_long_window_s = long_avg_s + self.twochunk_short_chunks_per_long_window * short_avg_s
         avg_32step_s = long_refreshes_per_32_steps * long_avg_s + short_chunks_per_32_steps * short_avg_s
         stats = {
             **super().get_inference_stats(),
@@ -307,15 +306,6 @@ class TwoChunkModelClient(ModelClient):
             "twochunk_long_window_steps": long_window_steps,
             "twochunk_long_refreshes_per_32_steps": long_refreshes_per_32_steps,
             "avg_32step_inference_time_s": avg_32step_s,
-            "avg_long_window_inference_time_s": avg_long_window_s,
-            "avg_32step_inference_time_formula": (
-                "twochunk_long_refreshes_per_32_steps * avg_long_chunk_inference_time_s + "
-                "twochunk_short_chunks_per_32_steps * avg_short_chunk_inference_time_s"
-            ),
-            "avg_long_window_inference_time_formula": (
-                "avg_long_chunk_inference_time_s + "
-                "twochunk_short_chunks_per_long_window * avg_short_chunk_inference_time_s"
-            ),
         }
         attention_summary = self.get_attention_debug_summary()
         if attention_summary is not None:

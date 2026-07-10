@@ -102,12 +102,15 @@ def _inference_stats_with_per_action(client_model: ModelClient) -> dict:
     return {
         **stats,
         "avg_model_inference_time_per_action_s": avg_action_time_s,
-        "avg_predict_action_time_per_action_s": avg_action_time_s,
         "model_inference_hz": model_inference_hz,
-        "predict_action_hz": model_inference_hz,
     }
 
 
+
+def _inference_totals(client_model: ModelClient) -> dict:
+    if hasattr(client_model, "get_inference_totals"):
+        return client_model.get_inference_totals()
+    return {"model_inference_calls": 0, "model_inference_time_s": 0.0}
 
 
 def _log_twochunk_attention_debug(inference_stats: dict) -> None:
@@ -210,6 +213,7 @@ def eval_libero(args: Args) -> None:
 
             # Reset environment
             client_model.reset(task_description=task_description)  # Reset the client connection
+            inference_before = _inference_totals(client_model)
             env.reset()
 
             # Set initial states
@@ -319,6 +323,13 @@ def eval_libero(args: Args) -> None:
             full_actions = np.stack(full_actions)
             # np.save(pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.npy", full_actions)
             policy_steps = int(len(full_actions))
+            inference_after = _inference_totals(client_model)
+            episode_inference_calls = int(
+                inference_after["model_inference_calls"] - inference_before["model_inference_calls"]
+            )
+            episode_inference_time_s = float(
+                inference_after["model_inference_time_s"] - inference_before["model_inference_time_s"]
+            )
 
             # print(pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4")
             # Log current results
@@ -331,6 +342,8 @@ def eval_libero(args: Args) -> None:
                     "success": bool(done),
                     "env_steps": int(args.num_steps_wait + policy_steps),
                     "policy_steps": policy_steps,
+                    "model_inference_calls": episode_inference_calls,
+                    "model_inference_time_s": episode_inference_time_s,
                     "video_path": str(video_path),
                 }
             )
@@ -358,6 +371,22 @@ def eval_libero(args: Args) -> None:
         )
 
     final_success_rate = float(total_successes) / float(total_episodes) if total_episodes else 0.0
+    all_episode_results = [episode for task in task_results for episode in task["episode_results"]]
+    episode_stats = {
+        "avg_policy_steps": float(np.mean([episode["policy_steps"] for episode in all_episode_results]))
+        if all_episode_results
+        else 0.0,
+        "avg_model_inference_calls": float(
+            np.mean([episode["model_inference_calls"] for episode in all_episode_results])
+        )
+        if all_episode_results
+        else 0.0,
+        "avg_model_inference_time_s": float(
+            np.mean([episode["model_inference_time_s"] for episode in all_episode_results])
+        )
+        if all_episode_results
+        else 0.0,
+    }
     inference_stats = _inference_stats_with_per_action(client_model)
     result_data = {
         "pretrained_path": args.pretrained_path,
@@ -370,6 +399,7 @@ def eval_libero(args: Args) -> None:
         "total_episodes": int(total_episodes),
         "total_successes": int(total_successes),
         "total_success_rate": final_success_rate,
+        "episode_stats": episode_stats,
         "inference_stats": inference_stats,
         "task_results": task_results,
     }
@@ -386,7 +416,7 @@ def eval_libero(args: Args) -> None:
             f"{inference_stats['avg_model_inference_time_per_action_s']:.4f}s/action "
             f"({inference_stats.get('model_inference_hz', 0.0):.2f} Hz), "
             f"(chunk_size={inference_stats['action_chunk_size']}, "
-            f"chunk_calls={inference_stats['model_inference_time_count']})"
+            f"chunk_calls={inference_stats['model_inference_calls']})"
         )
         if "avg_32step_inference_time_s" in inference_stats:
             logging.info(
@@ -397,15 +427,12 @@ def eval_libero(args: Args) -> None:
                 f"{inference_stats['twochunk_short_chunks_per_32_steps']} * "
                 f"short_avg={inference_stats['avg_short_chunk_inference_time_s']:.4f}s)"
             )
-        if "avg_long_window_inference_time_s" in inference_stats:
-            logging.info(
-                "TwoChunk long-window model inference time: "
-                f"{inference_stats['avg_long_window_inference_time_s']:.4f}s "
-                f"(window_steps={inference_stats.get('twochunk_long_window_steps', 32)}, "
-                f"long_avg={inference_stats['avg_long_chunk_inference_time_s']:.4f}s + "
-                f"{inference_stats.get('twochunk_short_chunks_per_long_window', 0)} * "
-                f"short_avg={inference_stats['avg_short_chunk_inference_time_s']:.4f}s)"
-            )
+    logging.info(
+        "Average episode: %.2f policy steps, %.2f model calls, %.4fs model inference",
+        episode_stats["avg_policy_steps"],
+        episode_stats["avg_model_inference_calls"],
+        episode_stats["avg_model_inference_time_s"],
+    )
 
 
 def _get_libero_env(task, resolution, seed):

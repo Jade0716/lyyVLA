@@ -119,6 +119,12 @@ class CalvinTwoChunkModelClient:
     def reset(self) -> None:
         self.raw_actions = None
 
+    def get_inference_totals(self) -> dict:
+        return {
+            "model_inference_calls": self.predict_action_time_count,
+            "model_inference_time_s": self.predict_action_time_total_s,
+        }
+
     def get_inference_stats(self) -> dict:
         avg_time_s = (
             self.predict_action_time_total_s / self.predict_action_time_count
@@ -139,14 +145,10 @@ class CalvinTwoChunkModelClient:
         short_chunks_per_32_steps = 32.0 / float(self.vision_refresh_steps) if self.vision_refresh_steps > 0 else 0.0
         long_refreshes_per_32_steps = 32.0 / float(long_window_steps) if long_window_steps > 0 else 0.0
         avg_32step_s = long_refreshes_per_32_steps * long_avg_s + short_chunks_per_32_steps * short_avg_s
-        avg_long_window_s = long_avg_s + self.twochunk_short_chunks_per_long_window * short_avg_s
         return {
             "avg_model_inference_time_s": avg_time_s,
             "total_model_inference_time_s": self.predict_action_time_total_s,
-            "model_inference_time_count": self.predict_action_time_count,
-            "avg_predict_action_chunk_time_s": avg_time_s,
-            "total_predict_action_chunk_time_s": self.predict_action_time_total_s,
-            "predict_action_chunk_count": self.predict_action_time_count,
+            "model_inference_calls": self.predict_action_time_count,
             "action_chunk_size": self.action_chunk_size,
             "vision_refresh_steps": self.vision_refresh_steps,
             "language_refresh_steps": self.language_refresh_steps,
@@ -168,7 +170,6 @@ class CalvinTwoChunkModelClient:
             "twochunk_long_window_steps": long_window_steps,
             "twochunk_long_refreshes_per_32_steps": long_refreshes_per_32_steps,
             "avg_32step_inference_time_s": avg_32step_s,
-            "avg_long_window_inference_time_s": avg_long_window_s,
         }
 
     def step(self, example: dict, step: int = 0) -> dict:
@@ -196,15 +197,17 @@ class CalvinTwoChunkModelClient:
             inference_time_s = time.perf_counter() - inference_start
             if response.get("status") != "ok":
                 raise RuntimeError(f"TwoChunk server inference failed: {response}")
-            self.predict_action_time_total_s += inference_time_s
-            self.predict_action_time_count += 1
+            timing = response["data"].get("inference_timing", {})
+            model_time_s = float(timing.get("model_inference_time_s", 0.0) or 0.0)
+            if model_time_s > 0.0:
+                self.predict_action_time_total_s += model_time_s
+                self.predict_action_time_count += 1
             self.raw_actions = np.asarray(response["data"]["actions"])[0]
             if self.raw_actions.shape[0] != self.vision_refresh_steps:
                 raise ValueError(
                     "TwoChunk server returned an unexpected fast chunk length: "
                     f"shape={self.raw_actions.shape}, expected={self.vision_refresh_steps}."
                 )
-            timing = response["data"].get("inference_timing", {})
             fast_time_s = float(timing.get("fast_time_s", 0.0) or 0.0)
             if fast_time_s > 0.0:
                 self.short_chunk_time_total_s += fast_time_s
@@ -271,6 +274,9 @@ class CalvinTwoChunkPolicyClient:
 
     def get_inference_stats(self) -> dict:
         return self.client.get_inference_stats()
+
+    def get_inference_totals(self) -> dict:
+        return self.client.get_inference_totals()
 
     def step(self, obs: dict, lang_annotation: str) -> np.ndarray:
         rgb_static = obs["rgb_obs"]["rgb_static"]

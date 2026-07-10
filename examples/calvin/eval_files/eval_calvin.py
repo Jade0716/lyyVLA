@@ -120,6 +120,11 @@ class CalvinPolicyClient:
             return self.client.get_inference_stats()
         return {}
 
+    def get_inference_totals(self) -> dict:
+        if hasattr(self.client, "get_inference_totals"):
+            return self.client.get_inference_totals()
+        return {"model_inference_calls": 0, "model_inference_time_s": 0.0}
+
     def step(self, obs: dict, lang_annotation: str) -> np.ndarray:
         """
         Query policy for action given observation and language instruction.
@@ -224,13 +229,14 @@ def save_inference_stats(policy, eval_log_dir: Path, epoch):
     print(
         "Average predict_action chunk time: "
         f"{stats['avg_model_inference_time_s']:.4f}s "
-        f"over {stats['model_inference_time_count']} chunk calls"
+        f"over {stats['model_inference_calls']} chunk calls"
     )
 
 
 def print_and_save_eval_results(
     results,
     sequences,
+    episode_results,
     log_dir,
     epoch,
     requested_sequences,
@@ -269,6 +275,28 @@ def print_and_save_eval_results(
         sr = cnt_success[task] / total[task] * 100.0
         print(f"  {task}: {cnt_success[task]} / {total[task]} | SR: {sr:.1f}%")
 
+    episode_stats = {
+        "avg_policy_steps": float(np.mean([item["policy_steps"] for item in episode_results]))
+        if episode_results
+        else 0.0,
+        "avg_model_inference_calls": float(
+            np.mean([item["model_inference_calls"] for item in episode_results])
+        )
+        if episode_results
+        else 0.0,
+        "avg_model_inference_time_s": float(
+            np.mean([item["model_inference_time_s"] for item in episode_results])
+        )
+        if episode_results
+        else 0.0,
+    }
+    print(
+        "Average episode: "
+        f"{episode_stats['avg_policy_steps']:.2f} policy steps, "
+        f"{episode_stats['avg_model_inference_calls']:.2f} model calls, "
+        f"{episode_stats['avg_model_inference_time_s']:.4f}s model inference"
+    )
+
     data = {
         "num_eval_sequences": num_eval_sequences,
         "num_requested_sequences": int(requested_sequences),
@@ -276,6 +304,8 @@ def print_and_save_eval_results(
         "avg_seq_len": avg_seq_len,
         "chain_sr": chain_sr,
         "task_info": task_info,
+        "episode_stats": episode_stats,
+        "episode_results": episode_results,
     }
 
     results_path = log_dir / "results.json"
@@ -344,6 +374,7 @@ def evaluate_policy_ddp(
     # interval_len = int(num_sequences // device_num)
     # eval_sequences = eval_sequences[device_id*interval_len:min((device_id+1)*interval_len, num_sequences)]
     results = []
+    episode_results = []
     plans = defaultdict(list)
     local_sequence_i = 0
     base_sequence_i = 0  # device_id * interval_len
@@ -366,6 +397,7 @@ def evaluate_policy_ddp(
             base_sequence_i + local_sequence_i,
             reset=reset,
             diverse_inst=diverse_inst,
+            episode_results=episode_results,
         )
         results.append(result)
         if not debug:
@@ -379,6 +411,7 @@ def evaluate_policy_ddp(
     print_and_save_eval_results(
         results,
         eval_sequences,
+        episode_results,
         eval_log_dir,
         epoch,
         requested_sequences=requested_sequences,
@@ -402,6 +435,7 @@ def evaluate_sequence(
     sequence_i=-1,
     reset=False,
     diverse_inst=False,
+    episode_results=None,
 ):
     """
     Evaluates a sequence of language instructions.
@@ -432,6 +466,7 @@ def evaluate_sequence(
                 robot_obs=robot_obs,
                 scene_obs=scene_obs,
                 diverse_inst=diverse_inst,
+                episode_results=episode_results,
             )
         else:
             success = rollout(
@@ -446,6 +481,7 @@ def evaluate_sequence(
                 subtask_i,
                 sequence_i,
                 diverse_inst=diverse_inst,
+                episode_results=episode_results,
             )
         if success:
             success_counter += 1
@@ -468,6 +504,7 @@ def rollout(
     robot_obs=None,
     scene_obs=None,
     diverse_inst=False,
+    episode_results=None,
 ):
     """
     Run the actual rollout on one subtask (which is one natural language instruction).
@@ -487,6 +524,7 @@ def rollout(
     if "\u2019" in lang_annotation:
         lang_annotation.replace("\u2019", "'")
     policy.reset()
+    inference_before = policy.get_inference_totals() if hasattr(policy, "get_inference_totals") else {}
     start_info = env.get_info()
 
     if debug:
@@ -516,11 +554,33 @@ def rollout(
                 print(colored("success", "green"), end=" ")
                 img_clip = ImageSequenceClip(img_queue, fps=30)
                 img_clip.write_gif(os.path.join(eval_log_dir, f"{sequence_i}-{subtask_i}-{subtask}-succ.gif"), fps=30)
+            inference_after = policy.get_inference_totals() if hasattr(policy, "get_inference_totals") else {}
+            if episode_results is not None:
+                episode_results.append({
+                    "sequence_idx": int(sequence_i),
+                    "subtask_idx": int(subtask_i),
+                    "subtask": subtask,
+                    "success": True,
+                    "policy_steps": int(step + 1),
+                    "model_inference_calls": int(inference_after.get("model_inference_calls", 0) - inference_before.get("model_inference_calls", 0)),
+                    "model_inference_time_s": float(inference_after.get("model_inference_time_s", 0.0) - inference_before.get("model_inference_time_s", 0.0)),
+                })
             return True
     if debug:
         print(colored("fail", "red"), end=" ")
         img_clip = ImageSequenceClip(img_queue, fps=30)
         img_clip.write_gif(os.path.join(eval_log_dir, f"{sequence_i}-{subtask_i}-{subtask}-fail.gif"), fps=30)
+    inference_after = policy.get_inference_totals() if hasattr(policy, "get_inference_totals") else {}
+    if episode_results is not None:
+        episode_results.append({
+            "sequence_idx": int(sequence_i),
+            "subtask_idx": int(subtask_i),
+            "subtask": subtask,
+            "success": False,
+            "policy_steps": int(EP_LEN),
+            "model_inference_calls": int(inference_after.get("model_inference_calls", 0) - inference_before.get("model_inference_calls", 0)),
+            "model_inference_time_s": float(inference_after.get("model_inference_time_s", 0.0) - inference_before.get("model_inference_time_s", 0.0)),
+        })
     return False
 
 

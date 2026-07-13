@@ -50,6 +50,13 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         self.use_motion_dct_loss = _as_bool(qwenvl_cfg.get("use_motion_dct_loss", True))
         self.motion_dct_loss_weight = float(qwenvl_cfg.get("motion_dct_loss_weight", 1.0))
         self.detach_idct_condition = _as_bool(qwenvl_cfg.get("detach_idct_condition", True))
+        self.action_condition_token_count = int(qwenvl_cfg.get("action_condition_token_count", 0))
+        if self.action_condition_token_count < 0:
+            raise ValueError(
+                "framework.qwenvl.action_condition_token_count must be >= 0, "
+                f"got {self.action_condition_token_count}."
+            )
+        self.layerwise_vlm_condition = _as_bool(qwenvl_cfg.get("layerwise_vlm_condition", False))
 
         # if self.motion_dct_keep_freq != 8:
         #     raise ValueError(
@@ -66,6 +73,11 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         # dimensions instead of predicting gripper entirely from scratch.
         self.motion_dct_action_dim = action_dim
         self.action_query_token = nn.Parameter(torch.randn(1, self.motion_dct_keep_freq, hidden_size) * 0.02)
+        self.action_condition_query_token = None
+        if self.action_condition_token_count > 0:
+            self.action_condition_query_token = nn.Parameter(
+                torch.randn(1, self.action_condition_token_count, hidden_size) * 0.02
+            )
         self.motion_dct_head = None
         if self.use_motion_dct_loss:
             self.motion_dct_head = L1RegressionActionHead(
@@ -129,6 +141,8 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
 
         if head_type in {"gated_attention", "vla_adapter", "adapter"}:
             default_condition_group_names = ["action_token", "coarse_idct", "memory", "dino"]
+            if getattr(self, "action_condition_token_count", 0) > 0:
+                default_condition_group_names.insert(1, "action_condition_token")
             if getattr(self, "include_state_condition", False):
                 default_condition_group_names.append("state")
             return GatedAttentionActionHead(
@@ -160,6 +174,67 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
             NUM_ACTIONS_CHUNK=self.fast_chunk_size,
         )
 
+    def _append_action_query(self, qwen_inputs: dict) -> dict:
+        model = self.qwen_vl_interface.model
+        input_ids = qwen_inputs["input_ids"]
+        inputs_embeds = model.get_input_embeddings()(input_ids)
+        dct_query = self.action_query_token.to(device=inputs_embeds.device, dtype=inputs_embeds.dtype)
+        dct_query = dct_query.expand(inputs_embeds.shape[0], -1, -1)
+        query_parts = [dct_query]
+        if self.action_condition_query_token is not None:
+            condition_query = self.action_condition_query_token.to(
+                device=inputs_embeds.device,
+                dtype=inputs_embeds.dtype,
+            )
+            query_parts.append(condition_query.expand(inputs_embeds.shape[0], -1, -1))
+        query = torch.cat(query_parts, dim=1)
+        query_len = query.shape[1]
+
+        qwen_inputs["inputs_embeds"] = torch.cat([inputs_embeds, query], dim=1)
+        qwen_inputs.pop("input_ids", None)
+
+        if "attention_mask" in qwen_inputs and qwen_inputs["attention_mask"] is not None:
+            query_mask = torch.ones(
+                qwen_inputs["attention_mask"].shape[0],
+                query_len,
+                dtype=qwen_inputs["attention_mask"].dtype,
+                device=qwen_inputs["attention_mask"].device,
+            )
+            qwen_inputs["attention_mask"] = torch.cat([qwen_inputs["attention_mask"], query_mask], dim=1)
+
+        if "mm_token_type_ids" in qwen_inputs and qwen_inputs["mm_token_type_ids"] is not None:
+            query_type = torch.zeros(
+                qwen_inputs["mm_token_type_ids"].shape[0],
+                query_len,
+                dtype=qwen_inputs["mm_token_type_ids"].dtype,
+                device=qwen_inputs["mm_token_type_ids"].device,
+            )
+            qwen_inputs["mm_token_type_ids"] = torch.cat([qwen_inputs["mm_token_type_ids"], query_type], dim=1)
+
+        return qwen_inputs
+
+    def _final_slow_token_hidden(self, slow_token_hidden: torch.Tensor) -> torch.Tensor:
+        if slow_token_hidden.ndim == 4:
+            return slow_token_hidden[-1]
+        return slow_token_hidden
+
+    def _dct_action_token_hidden(self, slow_token_hidden: torch.Tensor) -> torch.Tensor:
+        slow_token_hidden = self._final_slow_token_hidden(slow_token_hidden)
+        return slow_token_hidden[:, : self.motion_dct_keep_freq, :]
+
+    def _extra_action_condition_hidden(self, slow_token_hidden: torch.Tensor) -> torch.Tensor | None:
+        if self.action_condition_token_count <= 0:
+            return None
+        slow_token_hidden = self._final_slow_token_hidden(slow_token_hidden)
+        start = self.motion_dct_keep_freq
+        end = start + self.action_condition_token_count
+        return slow_token_hidden[:, start:end, :]
+
+    def _repeat_slow_token_hidden(self, slow_token_hidden: torch.Tensor, repeats: int) -> torch.Tensor:
+        if slow_token_hidden.ndim == 4:
+            return slow_token_hidden.repeat(1, repeats, 1, 1)
+        return slow_token_hidden.repeat(repeats, 1, 1)
+
     def _refresh_idct_basis(self, chunk_len: int) -> None:
         basis_key = f"_idct_basis_{chunk_len}_{self.motion_dct_keep_freq}"
         if hasattr(self, basis_key):
@@ -179,7 +254,19 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
     def _predict_low_dct(self, action_token_hidden: torch.Tensor) -> torch.Tensor:
         if self.motion_dct_head is None:
             raise RuntimeError("QwenGR00T_ActionToken_TwoChunk requires use_motion_dct_loss=true.")
-        return self.motion_dct_head(action_token_hidden)
+        return self.motion_dct_head(self._dct_action_token_hidden(action_token_hidden))
+
+    def _compute_motion_dct_loss(
+        self,
+        action_token_hidden: torch.Tensor,
+        actions: torch.Tensor,
+        chunk_len: int,
+    ) -> torch.Tensor:
+        return super()._compute_motion_dct_loss(
+            self._dct_action_token_hidden(action_token_hidden),
+            actions,
+            chunk_len,
+        )
 
     def _predict_coarse_action(self, action_token_hidden: torch.Tensor, chunk_len: int) -> torch.Tensor:
         low_dct_pred = self._predict_low_dct(action_token_hidden)
@@ -227,19 +314,62 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
                 instructions=instructions,
             )
         qwen_inputs = self._append_action_query(qwen_inputs)
+        total_slow_tokens = self.motion_dct_keep_freq + self.action_condition_token_count
+        captured_token_hidden = []
+        hook_handles = []
+        if self.layerwise_vlm_condition:
+            num_layers = len(getattr(self.action_model, "blocks", ()))
+            if num_layers <= 0:
+                raise ValueError("Layerwise VLM conditioning requires at least one action-head block.")
+            text_model = getattr(self.qwen_vl_interface.model.model, "language_model", None)
+            if text_model is None:
+                text_model = self.qwen_vl_interface.model.model
+            vlm_layers = getattr(text_model, "layers", None)
+            if vlm_layers is None:
+                raise AttributeError("Layerwise VLM conditioning requires text decoder layers to be exposed as .layers.")
+            if num_layers > len(vlm_layers):
+                raise ValueError(
+                    f"Action head has {num_layers} blocks, but the VLM only has {len(vlm_layers)} text layers."
+                )
+
+            def capture_action_tokens(_module, _inputs, output):
+                hidden = output[0] if isinstance(output, (tuple, list)) else output
+                # Materialize only the learnable-token positions so the hook does
+                # not retain the full sequence output through a view.
+                captured_token_hidden.append(hidden[:, -total_slow_tokens:, :].clone())
+
+            for layer in vlm_layers[-num_layers:]:
+                hook_handles.append(layer.register_forward_hook(capture_action_tokens))
+
         with torch.autocast("cuda", dtype=torch.bfloat16):
             # ActionToken only consumes the multimodal backbone hidden state.
             # Calling ForConditionalGeneration would additionally project every
             # sequence token through the large vocabulary lm_head, even though
             # those logits are discarded.
-            qwenvl_outputs = self.qwen_vl_interface.model.model(
-                **qwen_inputs,
-                output_attentions=False,
-                output_hidden_states=False,
-                return_dict=True,
-                use_cache=False,
-            )
-            return qwenvl_outputs.last_hidden_state[:, -self.motion_dct_keep_freq :, :]
+            try:
+                qwenvl_outputs = self.qwen_vl_interface.model.model(
+                    **qwen_inputs,
+                    output_attentions=False,
+                    output_hidden_states=False,
+                    return_dict=True,
+                    use_cache=False,
+                )
+            finally:
+                for handle in hook_handles:
+                    handle.remove()
+            if self.layerwise_vlm_condition:
+                if len(captured_token_hidden) != num_layers:
+                    raise RuntimeError(
+                        f"Expected {num_layers} captured VLM token layers, got {len(captured_token_hidden)}."
+                    )
+                captured_token_hidden[-1] = qwenvl_outputs.last_hidden_state[:, -total_slow_tokens:, :].clone()
+                return torch.stack(captured_token_hidden, dim=0)
+            return qwenvl_outputs.last_hidden_state[:, -total_slow_tokens:, :]
+
+    def _clear_temporary_action_conditions(self) -> None:
+        self._last_action_condition_groups = None
+        self._last_action_condition_layers = None
+        self._last_action_condition_group_layers = None
 
     def _encode_dino_hidden_states(
         self,
@@ -264,23 +394,34 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         coarse_actions: torch.Tensor | None = None,
         state: torch.Tensor | np.ndarray | None = None,
     ) -> torch.Tensor:
+        final_action_token_hidden = self._final_slow_token_hidden(action_token_hidden)
         dino_hidden = self._encode_dino_hidden_states(
             batch_images=frame_images,
-            dtype=action_token_hidden.dtype,
+            dtype=final_action_token_hidden.dtype,
             image_tensors=dino_image_tensors,
-        ).to(device=action_token_hidden.device)
+        ).to(device=final_action_token_hidden.device)
         condition_parts = []
         attention_spans = {}
         offset = 0
 
-        condition_parts.append(action_token_hidden)
-        length = int(action_token_hidden.shape[1])
+        dct_action_token_hidden = self._dct_action_token_hidden(action_token_hidden)
+        condition_parts.append(dct_action_token_hidden)
+        length = int(dct_action_token_hidden.shape[1])
         attention_spans["action_token"] = (offset, offset + length)
         offset += length
 
+        extra_action_condition_hidden = self._extra_action_condition_hidden(action_token_hidden)
+        if extra_action_condition_hidden is not None:
+            condition_parts.append(extra_action_condition_hidden)
+            length = int(extra_action_condition_hidden.shape[1])
+            attention_spans["action_condition_token"] = (offset, offset + length)
+            offset += length
+        else:
+            attention_spans["action_condition_token"] = (offset, offset)
+
         coarse_tokens = self._project_coarse_condition_tokens(
             coarse_actions,
-            dtype=action_token_hidden.dtype,
+            dtype=final_action_token_hidden.dtype,
         )
         if coarse_tokens is not None:
             condition_parts.append(coarse_tokens)
@@ -299,9 +440,9 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
 
         state_tokens = self._project_state_condition_tokens(
             state,
-            batch_size=action_token_hidden.shape[0],
-            device=action_token_hidden.device,
-            dtype=action_token_hidden.dtype,
+            batch_size=final_action_token_hidden.shape[0],
+            device=final_action_token_hidden.device,
+            dtype=final_action_token_hidden.dtype,
         )
         if state_tokens is not None:
             condition_parts.append(state_tokens)
@@ -313,13 +454,50 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
 
         self._last_attention_debug_spans = attention_spans
         self._last_action_condition_groups = {
-            "action_token": action_token_hidden,
+            "action_token": dct_action_token_hidden,
             "dino": dino_hidden,
         }
+        if extra_action_condition_hidden is not None:
+            self._last_action_condition_groups["action_condition_token"] = extra_action_condition_hidden
         if coarse_tokens is not None:
             self._last_action_condition_groups["coarse_idct"] = coarse_tokens
         if state_tokens is not None:
             self._last_action_condition_groups["state"] = state_tokens
+        self._last_action_condition_group_layers = None
+        self._last_action_condition_layers = None
+        if action_token_hidden.ndim == 4:
+            layer_groups = []
+            use_group_paths = bool(getattr(self.action_model, "separate_condition_paths", False))
+            layer_conditions = [] if not use_group_paths else None
+            for layer_hidden in action_token_hidden:
+                layer_dct_tokens = layer_hidden[:, : self.motion_dct_keep_freq, :]
+                layer_parts = [layer_dct_tokens] if layer_conditions is not None else None
+                groups = {
+                    "action_token": layer_dct_tokens,
+                    "dino": dino_hidden,
+                }
+                if self.action_condition_token_count > 0:
+                    start = self.motion_dct_keep_freq
+                    end = start + self.action_condition_token_count
+                    layer_condition_tokens = layer_hidden[:, start:end, :]
+                    if layer_parts is not None:
+                        layer_parts.append(layer_condition_tokens)
+                    groups["action_condition_token"] = layer_condition_tokens
+                if coarse_tokens is not None:
+                    if layer_parts is not None:
+                        layer_parts.append(coarse_tokens)
+                    groups["coarse_idct"] = coarse_tokens
+                if layer_parts is not None:
+                    layer_parts.append(dino_hidden)
+                if state_tokens is not None:
+                    if layer_parts is not None:
+                        layer_parts.append(state_tokens)
+                    groups["state"] = state_tokens
+                if layer_conditions is not None:
+                    layer_conditions.append(torch.cat(layer_parts, dim=1))
+                layer_groups.append(groups)
+            self._last_action_condition_layers = layer_conditions
+            self._last_action_condition_group_layers = layer_groups
         condition_hidden = torch.cat(condition_parts, dim=1)
         return condition_hidden
 
@@ -465,7 +643,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
             residual_action_targets.append(actions[:, start:end, :] - coarse_chunk)
             coarse_action_chunks.append(coarse_chunk)
 
-        flat_action_token_hidden = action_token_hidden.repeat(num_refreshes, 1, 1)
+        flat_action_token_hidden = self._repeat_slow_token_hidden(action_token_hidden, num_refreshes)
         flat_coarse_actions = torch.cat(coarse_action_chunks, dim=0).to(
             device=flat_action_token_hidden.device,
             dtype=flat_action_token_hidden.dtype,
@@ -491,8 +669,11 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
                 fused_hidden,
                 coarse_actions=flat_coarse_actions if self.coarse_actions_for_action_head else None,
                 condition_groups=getattr(self, "_last_action_condition_groups", None),
+                condition_layers=getattr(self, "_last_action_condition_layers", None),
+                condition_group_layers=getattr(self, "_last_action_condition_group_layers", None),
                 attention_debug_spans=None,
             )
+            self._clear_temporary_action_conditions()
             action_loss = self.l1_loss(pred_residual_actions, residual_action_targets)
 
         total_loss = action_loss_weight * action_loss + weighted_motion_dct_loss
@@ -633,6 +814,8 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
                 fused_hidden,
                 coarse_actions=coarse_chunk if self.coarse_actions_for_action_head else None,
                 condition_groups=getattr(self, "_last_action_condition_groups", None),
+                condition_layers=getattr(self, "_last_action_condition_layers", None),
+                condition_group_layers=getattr(self, "_last_action_condition_group_layers", None),
                 attention_debug_spans=self._last_attention_debug_spans if attention_debug else None,
             )
         pred_actions = pred_residual_actions + coarse_chunk
@@ -719,7 +902,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         for refresh_i in range(num_refreshes):
             flat_frame_images.extend([image_sequence[refresh_i] for image_sequence in image_sequences])
 
-        flat_action_token_hidden = action_token_hidden.repeat(num_refreshes, 1, 1)
+        flat_action_token_hidden = self._repeat_slow_token_hidden(action_token_hidden, num_refreshes)
         batch_size = len(examples)
         coarse_chunks = []
         for refresh_i in range(num_refreshes):
@@ -742,6 +925,8 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
             fused_hidden,
             coarse_actions=flat_coarse_actions if self.coarse_actions_for_action_head else None,
             condition_groups=getattr(self, "_last_action_condition_groups", None),
+            condition_layers=getattr(self, "_last_action_condition_layers", None),
+            condition_group_layers=getattr(self, "_last_action_condition_group_layers", None),
             attention_debug_spans=None,
         )
 

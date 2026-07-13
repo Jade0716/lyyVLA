@@ -120,7 +120,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
             if state_tensor is not None:
                 state_chunks.append(self._state_for_refresh(state_tensor, refresh_i))
 
-        flat_action_token_hidden = action_token_hidden.repeat(num_refreshes, 1, 1)
+        flat_action_token_hidden = self._repeat_slow_token_hidden(action_token_hidden, num_refreshes)
         flat_states = torch.cat(state_chunks, dim=0) if state_chunks else None
         flat_coarse_actions = torch.cat(coarse_action_chunks, dim=0).to(
             device=flat_action_token_hidden.device,
@@ -148,8 +148,11 @@ class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
                 fused_hidden,
                 coarse_actions=flat_coarse_actions if self.coarse_actions_for_action_head else None,
                 condition_groups=getattr(self, "_last_action_condition_groups", None),
+                condition_layers=getattr(self, "_last_action_condition_layers", None),
+                condition_group_layers=getattr(self, "_last_action_condition_group_layers", None),
                 attention_debug_spans=None,
             )
+            self._clear_temporary_action_conditions()
             action_loss = self.l1_loss(pred_actions, action_targets)
 
         total_loss = action_loss_weight * action_loss + weighted_motion_dct_loss
@@ -263,6 +266,8 @@ class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
                 fused_hidden,
                 coarse_actions=coarse_chunk if self.coarse_actions_for_action_head else None,
                 condition_groups=getattr(self, "_last_action_condition_groups", None),
+                condition_layers=getattr(self, "_last_action_condition_layers", None),
+                condition_group_layers=getattr(self, "_last_action_condition_group_layers", None),
                 attention_debug_spans=self._last_attention_debug_spans if attention_debug else None,
             )
         self._sync_cuda_if_needed()
@@ -346,7 +351,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
             if state_sequence is not None:
                 state_chunks.append(self._state_for_refresh(state_sequence, refresh_i))
 
-        flat_action_token_hidden = action_token_hidden.repeat(num_refreshes, 1, 1)
+        flat_action_token_hidden = self._repeat_slow_token_hidden(action_token_hidden, num_refreshes)
         flat_states = torch.cat(state_chunks, dim=0) if state_chunks else None
         batch_size = len(examples)
         coarse_chunks = []
@@ -371,6 +376,8 @@ class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
             fused_hidden,
             coarse_actions=flat_coarse_actions if self.coarse_actions_for_action_head else None,
             condition_groups=getattr(self, "_last_action_condition_groups", None),
+            condition_layers=getattr(self, "_last_action_condition_layers", None),
+            condition_group_layers=getattr(self, "_last_action_condition_group_layers", None),
             attention_debug_spans=None,
         )
 

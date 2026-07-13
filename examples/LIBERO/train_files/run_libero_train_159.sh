@@ -12,10 +12,11 @@ export NCCL_TIMEOUT=10000  # timeout set to 1 hour (unit: seconds)
 export NCCL_SOCKET_TIMEOUT_MS=360000
 export TORCHINDUCTOR_COMPILE_THREADS=${TORCHINDUCTOR_COMPILE_THREADS:-1}
 export MAX_JOBS=${MAX_JOBS:-4}
+export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 ###########################################################################################
 # === Please modify the following paths according to your environment ===
-config_yaml=${config_yaml:-./examples/LIBERO/train_files/starvla_cotrain_libero_twochunk_v3_159.yaml}
-run_id=${run_id:-159_qwen3.5-0.8b-twochunk-v3-$(date +%Y%m%d_%H%M%S)}
+config_yaml=${config_yaml:-./examples/LIBERO/train_files/starvla_cotrain_libero_twochunk_v2_159.yaml}
+run_id=${run_id:-159_10-twochunk-v2-separate-state-$(date +%Y%m%d_%H%M%S)}
 LOG_TO_FILE=${LOG_TO_FILE:-1}
 # === End of environment variable configuration ===
 ###########################################################################################

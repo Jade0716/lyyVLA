@@ -117,7 +117,7 @@ def _log_twochunk_attention_debug(inference_stats: dict) -> None:
     summary = inference_stats.get("twochunk_attention_debug") if inference_stats else None
     if not summary:
         return
-    groups = summary.get("groups", ["self", "action_token", "coarse_idct", "memory", "dino"])
+    groups = summary.get("groups", ["self", "action_token", "action_condition_token", "coarse_idct", "memory", "dino"])
     logging.info("TwoChunk attention debug averaged over %s model calls", summary.get("count"))
     header = "layer " + " ".join(f"{group:>13}" for group in groups) + "        sum"
     logging.info(header)

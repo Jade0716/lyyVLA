@@ -20,6 +20,8 @@ framework:
     use_motion_dct_loss: true
     motion_dct_loss_weight: 1.0
     detach_idct_condition: true
+    action_condition_token_count: 8
+    layerwise_vlm_condition: true
     use_lora: false
     lora_scope: language_model
     lora_freeze_base_model: true
@@ -40,12 +42,12 @@ framework:
 
   action_model:
     action_head_type: gated_attention
-    gated_num_blocks: 12
+    gated_num_blocks: 16
     gated_num_heads: 8
     gated_use_rope: true
     gated_adapter_token_count: 16
     separate_condition_paths: true
-    condition_group_names: [action_token, coarse_idct, memory, dino, state]
+    condition_group_names: [action_token, action_condition_token, coarse_idct, memory, dino, state]
     coarse_condition_query: false
     coarse_condition_tokens: true
     coarse_action_side_tokens: false
@@ -82,7 +84,7 @@ datasets:
     twochunk_training: true
     twochunk_vision_stride: 8
     twochunk_window_size: 32
-    CoT_prompt: "The robot is franka with single arm. The control frequency is 20 Hz. Your task is: {instruction}. Based on the current visual observation and task instruction, summarize the low-frequency future motion trend of the next 32 control actions into 4 learnable action tokens, then use the current observation to refine the next 4 control actions."
+    CoT_prompt: "The robot is franka with single arm. The control frequency is 20 Hz. Your task is: {instruction}. Use the first 4 learnable DCT action tokens only to summarize the low-frequency motion trend of the next 32 control actions, including the coarse end-effector trajectory and gripper trend. Use the following 8 separate learnable condition tokens as auxiliary action-head context; these tokens should not encode DCT coefficients, but should capture task progress, target-object interaction, contact/motion intent, and short-horizon correction cues for refining the next control actions from the current observation."
     per_device_batch_size: 8
     load_all_data_for_training: true
     video_backend: torchcodec
@@ -99,10 +101,10 @@ datasets:
     prefetch_factor: 2
 trainer:
   action_dit_loss_warmup: true
-  action_dit_loss_start_step: 10000
+  action_dit_loss_start_step: 5000
   action_dit_loss_warmup_steps: 5000
   repeated_diffusion_steps: 16
-  max_train_steps: 100000
+  max_train_steps: 50000
   num_warmup_steps: 5000
   save_interval: 10000
   eval_interval: 100

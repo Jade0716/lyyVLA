@@ -266,15 +266,34 @@ class GatedAttentionActionHead(nn.Module):
         coarse_actions: torch.Tensor | None = None,
         condition_groups: dict[str, torch.Tensor] | None = None,
         attention_debug_spans: dict[str, tuple[int, int]] | None = None,
+        condition_layers: list[torch.Tensor] | tuple[torch.Tensor, ...] | None = None,
+        condition_group_layers: list[dict[str, torch.Tensor]] | tuple[dict[str, torch.Tensor], ...] | None = None,
     ) -> torch.Tensor:
         batch_size = actions_hidden_states.shape[0]
-        condition = self.condition_proj(actions_hidden_states)
-        if self.separate_condition_paths and condition_groups:
+        use_layer_groups = self.separate_condition_paths and condition_group_layers is not None
+        condition = None if use_layer_groups else self.condition_proj(actions_hidden_states)
+        if self.separate_condition_paths and condition_groups and not use_layer_groups:
             condition_groups = {
                 name: self.condition_proj(group)
                 for name, group in condition_groups.items()
                 if group is not None
             }
+        if condition_layers is not None and not use_layer_groups:
+            condition_layers = [self.condition_proj(layer) for layer in condition_layers]
+        if use_layer_groups:
+            projected_groups = {}
+            projected_group_layers = []
+            for layer_groups in condition_group_layers:
+                projected_layer = {}
+                for name, group in layer_groups.items():
+                    if group is None:
+                        continue
+                    cache_key = id(group)
+                    if cache_key not in projected_groups:
+                        projected_groups[cache_key] = self.condition_proj(group)
+                    projected_layer[name] = projected_groups[cache_key]
+                projected_group_layers.append(projected_layer)
+            condition_group_layers = projected_group_layers
         query = self.action_chunk_embeddings.to(
             device=actions_hidden_states.device,
             dtype=actions_hidden_states.dtype,
@@ -307,18 +326,24 @@ class GatedAttentionActionHead(nn.Module):
             raise ValueError("coarse_action_side_tokens=true requires coarse_actions.")
 
         attention_debug_layers = []
-        for block in self.blocks:
+        for layer_idx, block in enumerate(self.blocks):
+            block_condition = condition
+            if condition_layers is not None:
+                block_condition = condition_layers[min(layer_idx, len(condition_layers) - 1)]
+            block_condition_groups = condition_groups if self.separate_condition_paths else None
+            if self.separate_condition_paths and condition_group_layers is not None:
+                block_condition_groups = condition_group_layers[min(layer_idx, len(condition_group_layers) - 1)]
             if attention_debug_spans is None:
                 x = block(
                     x,
-                    condition=condition,
-                    condition_groups=condition_groups if self.separate_condition_paths else None,
+                    condition=block_condition,
+                    condition_groups=block_condition_groups,
                 )
             else:
                 x, layer_stats = block(
                     x,
-                    condition=condition,
-                    condition_groups=condition_groups if self.separate_condition_paths else None,
+                    condition=block_condition,
+                    condition_groups=block_condition_groups,
                     attention_debug_spans=attention_debug_spans,
                 )
                 attention_debug_layers.append(layer_stats)
@@ -333,10 +358,14 @@ class GatedAttentionActionHead(nn.Module):
         coarse_actions: torch.Tensor | None = None,
         condition_groups: dict[str, torch.Tensor] | None = None,
         attention_debug_spans: dict[str, tuple[int, int]] | None = None,
+        condition_layers: list[torch.Tensor] | tuple[torch.Tensor, ...] | None = None,
+        condition_group_layers: list[dict[str, torch.Tensor]] | tuple[dict[str, torch.Tensor], ...] | None = None,
     ) -> torch.Tensor:
         return self.predict_action(
             actions_hidden_states,
             coarse_actions=coarse_actions,
             condition_groups=condition_groups,
             attention_debug_spans=attention_debug_spans,
+            condition_layers=condition_layers,
+            condition_group_layers=condition_group_layers,
         )

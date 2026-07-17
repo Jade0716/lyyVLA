@@ -12,14 +12,14 @@ export NCCL_SOCKET_TIMEOUT_MS=360000
 ###########################################################################################
 # === Please modify the following paths according to your environment ===
 config_yaml=${config_yaml:-./examples/LIBERO/train_files/starvla_cotrain_libero_qwenpi_l1.yaml}
-run_id=${run_id:-101_pi-l1-$(date +%Y%m%d_%H%M%S)}
+run_id=${run_id:-101_pi-l1-chunk8-$(date +%Y%m%d_%H%M%S)}
 LOG_TO_FILE=${LOG_TO_FILE:-1}
 # === End of environment variable configuration ===
 ###########################################################################################
 
 
 # export WANDB_MODE=disabled
-run_root_dir=${run_root_dir:-/15T/liuyuyan/lyyvla/results/Checkpoints}
+run_root_dir=${run_root_dir:-/15T/liuyuyan/lyyVLA/results/Checkpoints}
 
 output_dir=${run_root_dir}/${run_id}
 mkdir -p "${output_dir}"

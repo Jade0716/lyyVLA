@@ -54,7 +54,7 @@ class QwenPI_v3_L1DefaultConfig:
 
 @FRAMEWORK_REGISTRY.register("QwenPI_v3_L1")
 class Qwen_PI_v3_L1(baseframework):
-    """QwenPI layer-wise cross-attention ablation with 32-step L1 regression."""
+    """QwenPI layer-wise cross-attention ablation with configurable L1 chunks."""
 
     def __init__(self, config: Optional[dict] = None, **kwargs) -> None:
         super().__init__()
@@ -70,10 +70,19 @@ class Qwen_PI_v3_L1(baseframework):
 
         action_cfg = self.config.framework.action_model
         self.action_horizon = int(action_cfg.action_horizon)
-        if self.action_horizon != 32:
+        if self.action_horizon <= 0:
             raise ValueError(
-                "QwenPI_v3_L1 is the fixed chunk-size-32 ablation; "
+                "QwenPI_v3_L1 requires a positive action_horizon; "
                 f"got action_horizon={self.action_horizon}."
+            )
+        vla_data_cfg = self.config.datasets.get("vla_data", {})
+        action_window_size = vla_data_cfg.get("action_window_size", None)
+        if action_window_size is not None and int(action_window_size) != self.action_horizon:
+            raise ValueError(
+                "QwenPI_v3_L1 requires datasets.vla_data.action_window_size to "
+                "match framework.action_model.action_horizon; got "
+                f"action_window_size={action_window_size} and "
+                f"action_horizon={self.action_horizon}."
             )
 
         action_hidden_dim = int(action_cfg.get("hidden_size", vl_hidden_dim))

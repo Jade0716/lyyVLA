@@ -2,7 +2,7 @@
 set -euo pipefail
 
 STARVLA_DIR="${STARVLA_DIR:-$(cd "$(dirname "$0")/../../.." && pwd)}"
-EXP_DIR="${EXP_DIR:-./results/Checkpoints/159_10-twochunk-v2-separate-state-20260709_235003}"
+EXP_DIR="${EXP_DIR:-/15T/liuyuyan/lyyvla/results/Checkpoints/101_qwen3.5-0.8b-twochunk-v2-add8tokens-20260714_173602}"
 CHECKPOINT_DIR="${CHECKPOINT_DIR:-${EXP_DIR}/checkpoints}"
 CKPT_PATTERN="${CKPT_PATTERN:-steps_*_pytorch_model.pt}"
 HOST="${HOST:-127.0.0.1}"
@@ -21,7 +21,7 @@ ALLOW_PORT_IN_USE="${ALLOW_PORT_IN_USE:-0}"
 SERVER_SCRIPT="${SERVER_SCRIPT:-${STARVLA_DIR}/examples/LIBERO/eval_files/run_twochunk_policy_server.sh}"
 EVAL_SCRIPT="${EVAL_SCRIPT:-${STARVLA_DIR}/examples/LIBERO/eval_files/eval_libero_twochunk.sh}"
 STARVLA_PYTHON="${STARVLA_PYTHON:-/home/liuyuyan/miniconda3/envs/starVLA/bin/python}"
-LIBERO_PYTHON="${LIBERO_PYTHON:-/home/liuyuyan/miniconda3/envs/libero/bin/python}"
+LIBERO_PYTHON="${LIBERO_PYTHON:-/home/liuyuyan/miniconda3/envs/starVLA/bin/python}"
 
 mkdir -p "${SWEEP_LOG_DIR}"
 cd "${STARVLA_DIR}"

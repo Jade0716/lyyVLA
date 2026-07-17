@@ -102,6 +102,7 @@ class GatedAttentionBlock(nn.Module):
         condition: torch.Tensor | None = None,
         condition_groups: dict[str, torch.Tensor] | None = None,
         attention_debug_spans: dict[str, tuple[int, int]] | None = None,
+        condition_attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, float]]:
         batch, action_len, hidden_dim = x.shape
 
@@ -142,6 +143,30 @@ class GatedAttentionBlock(nn.Module):
             values.append(v_condition)
 
         scores = torch.cat(attn_scores, dim=-1) / math.sqrt(self.head_dim)
+        if condition_attention_mask is not None:
+            if self.separate_condition_paths and condition_groups:
+                raise ValueError(
+                    "condition_attention_mask is only supported for the shared condition path."
+                )
+            if condition is None or condition_attention_mask.shape != condition.shape[:2]:
+                raise ValueError(
+                    "condition_attention_mask must have shape [B, condition_len], got "
+                    f"{tuple(condition_attention_mask.shape)} for condition "
+                    f"{None if condition is None else tuple(condition.shape)}."
+                )
+            self_mask = torch.ones(
+                (batch, action_len),
+                dtype=torch.bool,
+                device=x.device,
+            )
+            key_mask = torch.cat(
+                [self_mask, condition_attention_mask.to(device=x.device, dtype=torch.bool)],
+                dim=1,
+            )
+            scores = scores.masked_fill(
+                ~key_mask[:, None, None, :],
+                torch.finfo(scores.dtype).min,
+            )
         weights = torch.softmax(scores, dim=-1)
         value = torch.cat(values, dim=2)
         output = torch.matmul(weights, value)
@@ -268,6 +293,7 @@ class GatedAttentionActionHead(nn.Module):
         attention_debug_spans: dict[str, tuple[int, int]] | None = None,
         condition_layers: list[torch.Tensor] | tuple[torch.Tensor, ...] | None = None,
         condition_group_layers: list[dict[str, torch.Tensor]] | tuple[dict[str, torch.Tensor], ...] | None = None,
+        condition_attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         batch_size = actions_hidden_states.shape[0]
         use_layer_groups = self.separate_condition_paths and condition_group_layers is not None
@@ -338,12 +364,14 @@ class GatedAttentionActionHead(nn.Module):
                     x,
                     condition=block_condition,
                     condition_groups=block_condition_groups,
+                    condition_attention_mask=condition_attention_mask,
                 )
             else:
                 x, layer_stats = block(
                     x,
                     condition=block_condition,
                     condition_groups=block_condition_groups,
+                    condition_attention_mask=condition_attention_mask,
                     attention_debug_spans=attention_debug_spans,
                 )
                 attention_debug_layers.append(layer_stats)
@@ -360,11 +388,13 @@ class GatedAttentionActionHead(nn.Module):
         attention_debug_spans: dict[str, tuple[int, int]] | None = None,
         condition_layers: list[torch.Tensor] | tuple[torch.Tensor, ...] | None = None,
         condition_group_layers: list[dict[str, torch.Tensor]] | tuple[dict[str, torch.Tensor], ...] | None = None,
+        condition_attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         return self.predict_action(
             actions_hidden_states,
             coarse_actions=coarse_actions,
             condition_groups=condition_groups,
+            condition_attention_mask=condition_attention_mask,
             attention_debug_spans=attention_debug_spans,
             condition_layers=condition_layers,
             condition_group_layers=condition_group_layers,

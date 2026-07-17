@@ -1218,6 +1218,13 @@ class LeRobotSingleDataset(Dataset):
             for key in config.modality_keys:
                 delta_indices[key] = np.array(config.delta_indices)
 
+        # Single-observation action-chunk experiments may override only the
+        # target horizon without enabling TwoChunk's image-sequence sampling.
+        if self.data_cfg is not None and self.data_cfg.get("action_window_size", None) is not None:
+            action_indices = np.arange(int(self.data_cfg.get("action_window_size")))
+            for key in self.modality_keys.get("action", []):
+                delta_indices[key] = action_indices
+
         if self.data_cfg is not None and self.data_cfg.get("twochunk_training", False):
             window_size = int(self.data_cfg.get("twochunk_window_size", 32))
             vision_stride = int(self.data_cfg.get("twochunk_vision_stride", 4))

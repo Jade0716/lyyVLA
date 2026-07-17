@@ -47,7 +47,7 @@ framework:
     gated_use_rope: true
     gated_adapter_token_count: 16
     separate_condition_paths: true
-    condition_group_names: [action_token, action_condition_token, coarse_idct, memory, dino, state]
+    condition_group_names: [action_token, action_condition_token, coarse_idct, dino, state]
     coarse_condition_query: false
     coarse_condition_tokens: true
     coarse_action_side_tokens: false

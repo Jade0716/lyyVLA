@@ -21,7 +21,7 @@ framework:
     motion_dct_loss_weight: 1.0
     detach_idct_condition: true
     action_condition_token_count: 8
-    layerwise_vlm_condition: true
+    layerwise_vlm_condition: false
     use_lora: false
     lora_scope: language_model
     lora_freeze_base_model: true
@@ -42,7 +42,7 @@ framework:
 
   action_model:
     action_head_type: gated_attention
-    gated_num_blocks: 12
+    gated_num_blocks: 16
     gated_num_heads: 8
     gated_use_rope: true
     gated_adapter_token_count: 16
@@ -127,7 +127,7 @@ trainer:
   log_actiontoken_grad_norm: false
   grad_norm_logging_frequency: 100
   gradient_clipping: 1.0
-  gradient_accumulation_steps: 1
+  gradient_accumulation_steps: 2
 
   optimizer:
     name: AdamW

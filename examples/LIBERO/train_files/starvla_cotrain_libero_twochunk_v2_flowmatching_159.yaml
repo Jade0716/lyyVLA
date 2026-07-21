@@ -92,7 +92,7 @@ trainer:
   action_dit_loss_warmup: true
   action_dit_loss_start_step: 5000
   action_dit_loss_warmup_steps: 5000
-  repeated_diffusion_steps: 2
+  repeated_diffusion_steps: 8
   max_train_steps: 50000
   num_warmup_steps: 5000
   save_interval: 10000

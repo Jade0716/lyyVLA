@@ -15,6 +15,17 @@ from starVLA.model.tools import FRAMEWORK_REGISTRY
 class Qwen_GR00T_ActionToken_TwoChunk_V2_FlowMatching(Qwen_GR00T_ActionToken_TwoChunk_V2):
     """Keep V2 conditioning and predict full actions through flow matching."""
 
+    def _build_fast_action_head(self, hidden_size: int, action_dim: int) -> nn.Module:
+        action_cfg = self.config.framework.get("action_model", {})
+        head_type = str(action_cfg.get("action_head_type", "")).lower()
+        if head_type in {"flow_matching", "flowmatching", "layerwise_flow_matching"}:
+            # The TwoChunk base constructor builds its gated/MLP head before
+            # this subclass can create the QwenPI-style layerwise flow head.
+            # Keep a registered placeholder only for that initialization span;
+            # __init__ replaces it immediately after super().__init__ returns.
+            return nn.Identity()
+        return super()._build_fast_action_head(hidden_size=hidden_size, action_dim=action_dim)
+
     def __init__(self, config=None, **kwargs):
         super().__init__(config=config, **kwargs)
 

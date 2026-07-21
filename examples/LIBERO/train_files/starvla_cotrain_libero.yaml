@@ -1,5 +1,5 @@
-run_id: starvla
-run_root_dir: playground/Checkpoints
+run_id: 159_10-qwenpi-v3
+run_root_dir: ./results/Checkpoints
 seed: 42
 wandb_entity: jade0716-hefei-university-of-technology
 wandb_project: libero_10
@@ -9,7 +9,7 @@ version_id: "0.21"
 framework:
   name: QwenPI_v3
   qwenvl:
-    base_vlm: /15T/liuyuyan/Qwen3.5-0.8B
+    base_vlm: /home/lyyyyy/Qwen3.5-0.8B
     attn_implementation: flash_attention_2
     vl_hidden_dim: 2048
   action_model:
@@ -20,10 +20,9 @@ framework:
     add_pos_embed: True
     max_seq_len: 1024
     action_dim: 7
-    state_dim: 7
-    future_action_window_size: 7
-    action_horizon: 8 # need merge with future_action_window_size 
-    past_action_window_size: 0
+    state_dim: 8
+    action_horizon: 8
+    repeated_diffusion_steps: 8
     noise_beta_alpha: 1.5
     noise_beta_beta: 1.0
     noise_s: 0.999
@@ -56,14 +55,27 @@ datasets:
 
   vla_data:
     dataset_py: lerobot_datasets
-    data_root_dir: /15T/liuyuyan/libero/
-    data_mix: libero_10 # libero_goal
+    include_state: true
+    data_root_dir: /mnt/4T_disk/16T/liuyuyan/libero/
+    data_mix: libero_10
     action_type: delta_qpos
-    sequential_step_sampling: False
-    CoT_prompt: "Your task is {instruction}. To identify the key objects for your task. Locate their bounding boxes in [x1,y1,x2,y2] format."
-    per_device_batch_size: 16
+    action_window_size: 8
+    twochunk_training: false
+    sequential_step_sampling: false
+    CoT_prompt: "The robot is a Franka single-arm robot. The control frequency is 20 Hz. Your task is: {instruction}. Predict the next 8 control actions from the current observation and robot state."
+    per_device_batch_size: 8
     load_all_data_for_training: true
-    video_backend: torchvision_av
+    video_backend: torchcodec
+    video_backend_kwargs:
+      device: cpu
+      num_ffmpeg_threads: 1
+      fallback_backend: torchcodec_cpu
+    balance_dataset_weights: true
+    balance_trajectory_weights: true
+    num_workers: 4
+    multiprocessing_context: fork
+    persistent_workers: true
+    prefetch_factor: 4
 
 trainer:
   repeated_diffusion_steps: 8
@@ -87,7 +99,7 @@ trainer:
   weight_decay: 0.0
   logging_frequency: 10
   gradient_clipping: 1.0
-  gradient_accumulation_steps: 4
+  gradient_accumulation_steps: 1
   gradient_checkpointing: true
 
   optimizer:

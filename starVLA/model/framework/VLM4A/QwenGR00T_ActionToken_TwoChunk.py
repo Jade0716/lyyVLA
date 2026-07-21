@@ -235,6 +235,14 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
             return slow_token_hidden.repeat(1, repeats, 1, 1)
         return slow_token_hidden.repeat(repeats, 1, 1)
 
+    def _action_condition_layer_count(self) -> int:
+        blocks = getattr(self.action_model, "blocks", None)
+        if blocks is not None:
+            return len(blocks)
+        model = getattr(self.action_model, "model", None)
+        transformer_blocks = getattr(model, "transformer_blocks", None)
+        return len(transformer_blocks) if transformer_blocks is not None else 0
+
     def _refresh_idct_basis(self, chunk_len: int) -> None:
         basis_key = f"_idct_basis_{chunk_len}_{self.motion_dct_keep_freq}"
         if hasattr(self, basis_key):
@@ -318,7 +326,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         captured_token_hidden = []
         hook_handles = []
         if self.layerwise_vlm_condition:
-            num_layers = len(getattr(self.action_model, "blocks", ()))
+            num_layers = self._action_condition_layer_count()
             if num_layers <= 0:
                 raise ValueError("Layerwise VLM conditioning requires at least one action-head block.")
             text_model = getattr(self.qwen_vl_interface.model.model, "language_model", None)

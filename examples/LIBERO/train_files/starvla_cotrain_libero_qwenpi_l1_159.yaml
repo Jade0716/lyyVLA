@@ -1,5 +1,5 @@
 run_id: qwenpi_v3_l1_chunk32
-run_root_dir: /15T/liuyuyan/lyyvla/results/Checkpoints
+run_root_dir: /mnt/4T_disk/16T/liuyuyan/lyyvla/results/Checkpoints
 seed: 42
 wandb_entity: jade0716-hefei-university-of-technology
 wandb_project: libero_10
@@ -10,7 +10,7 @@ framework:
   name: QwenPI_v3_L1
 
   qwenvl:
-    base_vlm: /home/liuyuyan/Qwen3.5-0.8B
+    base_vlm: /home/lyyyyy/Qwen3.5-0.8B
     attn_implementation: flash_attention_2
 
   action_model:
@@ -28,8 +28,8 @@ framework:
 datasets:
   vla_data:
     dataset_py: lerobot_datasets
-    include_state: true
-    data_root_dir: /15T/liuyuyan/libero/
+    include_state: false
+    data_root_dir: /mnt/4T_disk/16T/liuyuyan/libero/
     data_mix: libero_10
     action_type: delta_qpos
     # Keep this equal to action_horizon; this does not enable TwoChunk images.
@@ -37,7 +37,7 @@ datasets:
     twochunk_training: false
     sequential_step_sampling: false
     CoT_prompt: "The robot is franka with single arm. The control frequency is 20 Hz. Your task is: {instruction}. Predict the next 8 control actions from the current observation."
-    per_device_batch_size: 32
+    per_device_batch_size: 64
     load_all_data_for_training: true
     video_backend: torchcodec
     video_backend_kwargs:

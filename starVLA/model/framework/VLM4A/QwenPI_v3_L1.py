@@ -1,9 +1,11 @@
 """QwenPI-style layer-wise VLM conditioning with an L1 action head.
 
-This ablation keeps the defining QwenPI connection: every text-decoder layer
-provides its complete token sequence to the matching action-head attention
-block.  It replaces flow matching with the deterministic attention regressor
-used by the TwoChunk family and trains it directly with L1 action loss.
+This ablation keeps the defining QwenPI connection: each selected text-decoder
+layer provides its complete token sequence to the matching action-head
+attention block. It replaces flow matching with the deterministic attention
+regressor used by the TwoChunk family and trains it directly with L1 action
+loss. The number of selected final VLM layers is controlled by
+``action_model.gated_num_blocks``.
 """
 
 from dataclasses import dataclass, field
@@ -45,6 +47,7 @@ class QwenPI_v3_L1DefaultConfig:
             "action_dim": 7,
             "state_dim": 7,
             "action_horizon": 32,
+            "gated_num_blocks": 16,
             "gated_num_heads": 8,
             "gated_use_rope": True,
             "zero_init_output": True,
@@ -63,12 +66,18 @@ class Qwen_PI_v3_L1(baseframework):
 
         vlm_hf_cfg = self.qwen_vl_interface.model.config
         text_cfg = getattr(vlm_hf_cfg, "text_config", vlm_hf_cfg)
-        self.num_vl_layers = int(text_cfg.num_hidden_layers)
+        self.total_vl_layers = int(text_cfg.num_hidden_layers)
         vl_hidden_dim = int(vlm_hf_cfg.hidden_size)
         self.config.framework.qwenvl.vl_hidden_dim = vl_hidden_dim
-        self.config.framework.qwenvl.num_vl_layers = self.num_vl_layers
+        self.config.framework.qwenvl.num_vl_layers = self.total_vl_layers
 
         action_cfg = self.config.framework.action_model
+        self.num_action_layers = int(action_cfg.get("gated_num_blocks", self.total_vl_layers))
+        if self.num_action_layers <= 0 or self.num_action_layers > self.total_vl_layers:
+            raise ValueError(
+                "QwenPI_v3_L1 requires gated_num_blocks in [1, num_vl_layers]; "
+                f"got {self.num_action_layers} for a {self.total_vl_layers}-layer VLM."
+            )
         self.action_horizon = int(action_cfg.action_horizon)
         if self.action_horizon <= 0:
             raise ValueError(
@@ -93,8 +102,8 @@ class Qwen_PI_v3_L1(baseframework):
                 f"gated_num_heads={num_heads}."
             )
 
-        # Exactly one projector and one cross-attention block per VLM decoder
-        # layer.  All valid sequence tokens are retained at every layer.
+        # Match each action block to one of the selected final VLM layers.
+        # All valid sequence tokens are retained for every selected layer.
         self.project_layers = nn.ModuleList(
             [
                 (
@@ -105,7 +114,7 @@ class Qwen_PI_v3_L1(baseframework):
                         nn.Linear(vl_hidden_dim, action_hidden_dim),
                     )
                 )
-                for _ in range(self.num_vl_layers)
+                for _ in range(self.num_action_layers)
             ]
         )
         self.action_model = GatedAttentionActionHead(
@@ -113,7 +122,7 @@ class Qwen_PI_v3_L1(baseframework):
             hidden_dim=action_hidden_dim,
             action_dim=int(action_cfg.action_dim),
             NUM_ACTIONS_CHUNK=self.action_horizon,
-            num_blocks=self.num_vl_layers,
+            num_blocks=self.num_action_layers,
             num_heads=num_heads,
             use_rope=bool(action_cfg.get("gated_use_rope", True)),
             separate_condition_paths=False,
@@ -138,7 +147,7 @@ class Qwen_PI_v3_L1(baseframework):
                 output_hidden_states=True,
                 return_dict=True,
             )
-            vl_layers = list(outputs.hidden_states[-self.num_vl_layers :])
+            vl_layers = list(outputs.hidden_states[-self.num_action_layers :])
             vl_layers = [
                 projector(hidden)
                 for projector, hidden in zip(self.project_layers, vl_layers)

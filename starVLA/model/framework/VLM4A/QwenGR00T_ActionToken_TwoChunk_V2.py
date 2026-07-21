@@ -25,6 +25,33 @@ from starVLA.training.trainer_utils.trainer_tools import resize_images
 class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
     """TwoChunk variant where action head predicts full actions, no memory."""
 
+    def _predict_fast_action(
+        self,
+        fused_hidden: torch.Tensor,
+        coarse_actions: torch.Tensor,
+        attention_debug_spans=None,
+    ) -> torch.Tensor:
+        try:
+            return self.action_model.predict_action(
+                fused_hidden,
+                coarse_actions=coarse_actions if self.coarse_actions_for_action_head else None,
+                condition_groups=getattr(self, "_last_action_condition_groups", None),
+                condition_layers=getattr(self, "_last_action_condition_layers", None),
+                condition_group_layers=getattr(self, "_last_action_condition_group_layers", None),
+                attention_debug_spans=attention_debug_spans,
+            )
+        finally:
+            self._clear_temporary_action_conditions()
+
+    def _compute_fast_action_loss(
+        self,
+        fused_hidden: torch.Tensor,
+        action_targets: torch.Tensor,
+        coarse_actions: torch.Tensor,
+    ) -> torch.Tensor:
+        pred_actions = self._predict_fast_action(fused_hidden, coarse_actions)
+        return self.l1_loss(pred_actions, action_targets)
+
     @staticmethod
     def _state_for_refresh(state_tensor: torch.Tensor | None, refresh_i: int) -> torch.Tensor | None:
         if state_tensor is None:
@@ -144,16 +171,11 @@ class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
         )
 
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            pred_actions = self.action_model.predict_action(
+            action_loss = self._compute_fast_action_loss(
                 fused_hidden,
-                coarse_actions=flat_coarse_actions if self.coarse_actions_for_action_head else None,
-                condition_groups=getattr(self, "_last_action_condition_groups", None),
-                condition_layers=getattr(self, "_last_action_condition_layers", None),
-                condition_group_layers=getattr(self, "_last_action_condition_group_layers", None),
-                attention_debug_spans=None,
+                action_targets,
+                flat_coarse_actions,
             )
-            self._clear_temporary_action_conditions()
-            action_loss = self.l1_loss(pred_actions, action_targets)
 
         total_loss = action_loss_weight * action_loss + weighted_motion_dct_loss
         output = {
@@ -262,12 +284,9 @@ class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
         )
         attention_debug = bool(kwargs.get("attention_debug", False))
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            pred_actions = self.action_model.predict_action(
+            pred_actions = self._predict_fast_action(
                 fused_hidden,
-                coarse_actions=coarse_chunk if self.coarse_actions_for_action_head else None,
-                condition_groups=getattr(self, "_last_action_condition_groups", None),
-                condition_layers=getattr(self, "_last_action_condition_layers", None),
-                condition_group_layers=getattr(self, "_last_action_condition_group_layers", None),
+                coarse_chunk,
                 attention_debug_spans=self._last_attention_debug_spans if attention_debug else None,
             )
         self._sync_cuda_if_needed()
@@ -372,13 +391,9 @@ class Qwen_GR00T_ActionToken_TwoChunk_V2(Qwen_GR00T_ActionToken_TwoChunk):
             state=flat_states,
         )
         flat_coarse_actions = flat_coarse_actions.to(device=fused_hidden.device, dtype=fused_hidden.dtype)
-        pred_actions = self.action_model.predict_action(
+        pred_actions = self._predict_fast_action(
             fused_hidden,
-            coarse_actions=flat_coarse_actions if self.coarse_actions_for_action_head else None,
-            condition_groups=getattr(self, "_last_action_condition_groups", None),
-            condition_layers=getattr(self, "_last_action_condition_layers", None),
-            condition_group_layers=getattr(self, "_last_action_condition_group_layers", None),
-            attention_debug_spans=None,
+            flat_coarse_actions,
         )
 
         pred_actions = pred_actions.view(num_refreshes, batch_size, self.fast_chunk_size, -1)

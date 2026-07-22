@@ -379,7 +379,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_StateMemory(Qwen_GR00T_ActionToken_TwoChun
             dtype=self._cached_action_token_hidden.dtype,
         )
         state_memory_tokens = self._read_predict_state_memory()
-        dino_image_tensors = self.dino_encoder.prepare_dino_input(batch_images)
+        dino_image_tensors = self._prepare_dino_input(batch_images)
         self._sync_cuda_if_needed()
         fast_start = time.perf_counter()
         fused_hidden = self._build_action_condition(

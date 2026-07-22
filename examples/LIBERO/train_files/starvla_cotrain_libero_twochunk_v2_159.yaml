@@ -20,8 +20,8 @@ framework:
     use_motion_dct_loss: true
     motion_dct_loss_weight: 1.0
     detach_idct_condition: true
-    action_condition_token_count: 8
-    layerwise_vlm_condition: true
+    action_condition_token_count: 0
+    layerwise_vlm_condition: false
     use_lora: false
     lora_scope: language_model
     lora_freeze_base_model: true
@@ -31,6 +31,7 @@ framework:
     lora_target_modules: [q_proj, k_proj, v_proj, o_proj]
 
   dino:
+    view_indices: [1]  # LIBERO: 0=agentview/primary, 1=wrist; null selects all views
     dino_backbone: dinov3_vits16plus
     dino_repo_path: /home/lyyyyy/dinov3
     dino_weights_path: /home/lyyyyy/dinov3/DINO/dinov3_vits16plus_pretrain_lvd1689m-4057cbaa.pth
@@ -47,7 +48,7 @@ framework:
     gated_use_rope: true
     gated_adapter_token_count: 16
     separate_condition_paths: true
-    condition_group_names: [action_token, action_condition_token, coarse_idct, dino, state]
+    condition_group_names: [action_token, coarse_idct, dino, state]
     coarse_condition_query: false
     coarse_condition_tokens: true
     coarse_action_side_tokens: false
@@ -84,7 +85,7 @@ datasets:
     twochunk_training: true
     twochunk_vision_stride: 8
     twochunk_window_size: 32
-    CoT_prompt: "The robot is franka with single arm. The control frequency is 20 Hz. Your task is: {instruction}. Use the first 4 learnable DCT action tokens only to summarize the low-frequency motion trend of the next 32 control actions, including the coarse end-effector trajectory and gripper trend. Use the following 8 separate learnable condition tokens as auxiliary action-head context; these tokens should not encode DCT coefficients, but should capture task progress, target-object interaction, contact/motion intent, and short-horizon correction cues for refining the next control actions from the current observation."
+    CoT_prompt: "The robot is franka with single arm. The control frequency is 20 Hz. Your task is: {instruction}. Use the 4 learnable DCT action tokens only to summarize the low-frequency motion trend of the next 32 control actions, including the coarse end-effector trajectory and gripper trend."
     per_device_batch_size: 8
     load_all_data_for_training: true
     video_backend: torchcodec

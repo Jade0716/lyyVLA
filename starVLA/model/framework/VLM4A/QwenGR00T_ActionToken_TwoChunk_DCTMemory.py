@@ -455,7 +455,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
             device=flat_action_token_hidden.device,
             dtype=flat_action_token_hidden.dtype,
         )
-        dino_image_tensors = self.dino_encoder.prepare_dino_input(flat_frame_images)
+        dino_image_tensors = self._prepare_dino_input(flat_frame_images)
         fused_hidden = self._build_action_condition_with_memory(
             flat_action_token_hidden,
             flat_memory_tokens,
@@ -728,7 +728,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_DCTMemory(Qwen_GR00T_ActionToken_TwoChunk)
             start = 0
             end = self.fast_chunk_size
 
-        dino_image_tensors = self.dino_encoder.prepare_dino_input(batch_images)
+        dino_image_tensors = self._prepare_dino_input(batch_images)
         self._sync_cuda_if_needed()
         fast_start = time.perf_counter()
         memory_tokens = self._online_memory_tokens(

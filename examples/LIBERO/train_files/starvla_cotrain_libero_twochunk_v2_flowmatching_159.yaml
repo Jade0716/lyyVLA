@@ -25,6 +25,7 @@ framework:
     use_lora: false
 
   dino:
+    view_indices: [0, 1]  # LIBERO: 0=agentview/primary, 1=wrist; null selects all views
     dino_backbone: dinov3_vits16plus
     dino_repo_path: /home/lyyyyy/dinov3
     dino_weights_path: /home/lyyyyy/dinov3/DINO/dinov3_vits16plus_pretrain_lvd1689m-4057cbaa.pth

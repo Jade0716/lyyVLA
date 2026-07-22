@@ -11,8 +11,8 @@ export NCCL_TIMEOUT=10000  # timeout set to 1 hour (unit: seconds)
 export NCCL_SOCKET_TIMEOUT_MS=360000
 ###########################################################################################
 # === Please modify the following paths according to your environment ===
-config_yaml=${config_yaml:-./examples/LIBERO/train_files/starvla_cotrain_libero_qwenpi_l1.yaml}
-run_id=${run_id:-101_pi-l1-chunk8-$(date +%Y%m%d_%H%M%S)}
+config_yaml=${config_yaml:-./examples/LIBERO/train_files/starvla_cotrain_libero_twochunk_v2.yaml}
+run_id=${run_id:-101_10-twochunk-agentview-$(date +%Y%m%d_%H%M%S)}
 LOG_TO_FILE=${LOG_TO_FILE:-1}
 # === End of environment variable configuration ===
 ###########################################################################################
@@ -47,7 +47,7 @@ fi
 # mv this script to the output dir
 cp "$0" "${output_dir}/"
 
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-1,2}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,2}
 accelerate launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
   --num_processes 2 \

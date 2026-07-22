@@ -34,6 +34,19 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
 
         qwenvl_cfg = self.config.framework.get("qwenvl", {})
         dino_cfg = self.config.framework.get("dino", {})
+        dino_view_indices = dino_cfg.get("view_indices", None)
+        if dino_view_indices is None:
+            self.dino_view_indices = None
+        else:
+            if isinstance(dino_view_indices, (int, np.integer)):
+                dino_view_indices = [int(dino_view_indices)]
+            self.dino_view_indices = tuple(int(index) for index in dino_view_indices)
+            if not self.dino_view_indices:
+                raise ValueError("framework.dino.view_indices must not be empty; use null to select all views.")
+            if min(self.dino_view_indices) < 0:
+                raise ValueError("framework.dino.view_indices must contain non-negative indices.")
+            if len(set(self.dino_view_indices)) != len(self.dino_view_indices):
+                raise ValueError("framework.dino.view_indices must not contain duplicate indices.")
         hidden_size = int(self.qwen_vl_interface.model.config.hidden_size)
         action_dim = int(self.config.framework.action_model.action_dim)
         vla_data_cfg = self.config.get("datasets", {}).get("vla_data", {})
@@ -379,6 +392,45 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         self._last_action_condition_layers = None
         self._last_action_condition_group_layers = None
 
+    def _select_dino_views(self, batch_images):
+        """Select DINO-only camera views while leaving the VLM image input unchanged."""
+        if self.dino_view_indices is None:
+            return batch_images
+
+        if isinstance(batch_images, torch.Tensor):
+            if batch_images.ndim == 4:
+                if self.dino_view_indices != (0,):
+                    raise IndexError(
+                        "DINO input has one view, but framework.dino.view_indices requests "
+                        f"{list(self.dino_view_indices)}."
+                    )
+                return batch_images
+            if batch_images.ndim != 5:
+                raise ValueError(f"Expected 4D or 5D DINO image tensor, got {tuple(batch_images.shape)}.")
+            num_views = batch_images.shape[1]
+            if max(self.dino_view_indices) >= num_views:
+                raise IndexError(
+                    f"DINO input has {num_views} views, but framework.dino.view_indices requests "
+                    f"{list(self.dino_view_indices)}."
+                )
+            indices = torch.tensor(self.dino_view_indices, device=batch_images.device)
+            return batch_images.index_select(1, indices)
+
+        selected_batch = []
+        for sample_index, views in enumerate(batch_images):
+            if not isinstance(views, (list, tuple)):
+                views = [views]
+            if max(self.dino_view_indices) >= len(views):
+                raise IndexError(
+                    f"DINO sample {sample_index} has {len(views)} views, but "
+                    f"framework.dino.view_indices requests {list(self.dino_view_indices)}."
+                )
+            selected_batch.append([views[index] for index in self.dino_view_indices])
+        return selected_batch
+
+    def _prepare_dino_input(self, batch_images) -> torch.Tensor:
+        return self.dino_encoder.prepare_dino_input(self._select_dino_views(batch_images))
+
     def _encode_dino_hidden_states(
         self,
         batch_images: List,
@@ -386,7 +438,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
         image_tensors: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if image_tensors is None:
-            image_tensors = self.dino_encoder.prepare_dino_input(batch_images)
+            image_tensors = self._prepare_dino_input(batch_images)
         batch_size = len(batch_images)
         with torch.autocast("cuda", dtype=torch.bfloat16):
             dino_features = self.dino_encoder(image_tensors)
@@ -656,7 +708,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
             device=flat_action_token_hidden.device,
             dtype=flat_action_token_hidden.dtype,
         )
-        dino_image_tensors = self.dino_encoder.prepare_dino_input(flat_frame_images)
+        dino_image_tensors = self._prepare_dino_input(flat_frame_images)
         fused_hidden = self._build_action_condition(
             flat_action_token_hidden,
             flat_frame_images,
@@ -803,7 +855,7 @@ class Qwen_GR00T_ActionToken_TwoChunk(Qwen_GR00T_ActionToken):
 
         # DINO image tensor construction is preprocessing; keep it outside the
         # model-only interval just like the VLA-Adapter image processor.
-        dino_image_tensors = self.dino_encoder.prepare_dino_input(batch_images)
+        dino_image_tensors = self._prepare_dino_input(batch_images)
         self._sync_cuda_if_needed()
         fast_start = time.perf_counter()
         action_dim = int(self.config.framework.action_model.action_dim)

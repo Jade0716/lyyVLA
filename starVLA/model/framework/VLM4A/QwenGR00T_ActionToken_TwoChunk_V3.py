@@ -134,7 +134,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_V3(Qwen_GR00T_ActionToken_TwoChunk):
             coarse_action_chunks.append(coarse_chunk)
 
         flat_action_token_hidden = action_token_hidden.repeat(num_refreshes, 1, 1)
-        dino_image_tensors = self.dino_encoder.prepare_dino_input(flat_frame_images)
+        dino_image_tensors = self._prepare_dino_input(flat_frame_images)
         fused_hidden = self._build_action_condition_without_coarse(
             flat_action_token_hidden,
             flat_frame_images,
@@ -234,7 +234,7 @@ class Qwen_GR00T_ActionToken_TwoChunk_V3(Qwen_GR00T_ActionToken_TwoChunk):
             start = 0
             end = self.fast_chunk_size
 
-        dino_image_tensors = self.dino_encoder.prepare_dino_input(batch_images)
+        dino_image_tensors = self._prepare_dino_input(batch_images)
         self._sync_cuda_if_needed()
         fast_start = time.perf_counter()
         action_dim = int(self.config.framework.action_model.action_dim)
